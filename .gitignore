@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+devices.db
+devices.db-*
+data/
+backups/
+static/uploads/
+requirements.lock.txt
+test-artifacts/
+*.log
+*.pid

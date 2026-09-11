@@ -1,0 +1,23 @@
+services:
+  clickhouse:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:25.8}
+    container_name: syslog-clickhouse
+    ports:
+      - "127.0.0.1:8123:8123"
+      - "127.0.0.1:9000:9000"
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./schema_structured.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    environment:
+      CLICKHOUSE_DB: syslog_db
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-syslog}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in your environment}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    restart: unless-stopped
+
+volumes:
+  clickhouse-data:
