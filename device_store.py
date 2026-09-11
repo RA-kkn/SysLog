@@ -50,6 +50,7 @@ def init_db():
                 c.execute(f'ALTER TABLE devices ADD COLUMN {column} TEXT')
         c.execute('CREATE TABLE IF NOT EXISTS ingest_minutes (minute INTEGER PRIMARY KEY, rows INTEGER NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS storage_samples (sample_time INTEGER PRIMARY KEY, disk_bytes INTEGER NOT NULL)')
+        c.execute('CREATE TABLE IF NOT EXISTS ingest_coverage (worker INTEGER, minute INTEGER, seconds REAL NOT NULL, PRIMARY KEY(worker,minute))')
         # defaults
         c.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES ('logo_url', '/static/presets/logo-default.svg')"
@@ -181,3 +182,15 @@ def set_setting(key: str, value: str):
 
 
 init_db()
+
+
+def record_coverage(worker, start, end):
+    # Never fill a long pause/restart with invented history.
+    start = max(start, end - 15)
+    with _conn() as c:
+        while start < end:
+            minute = int(start // 60) * 60
+            stop = min(end, minute + 60)
+            c.execute('INSERT INTO ingest_coverage VALUES (?,?,?) ON CONFLICT(worker,minute) DO UPDATE SET seconds=min(60,seconds+excluded.seconds)', (worker, minute, stop-start))
+            start = stop
+        c.execute('DELETE FROM ingest_coverage WHERE minute<?', (int(end)-8*86400,))

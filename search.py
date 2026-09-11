@@ -5,6 +5,7 @@ import ipaddress
 import json
 import re
 import uuid
+import time
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from database import get_client
@@ -17,6 +18,7 @@ def utc(value):
 
 def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, cursor=None,
                port=None, severity=None, hostname='', event_type=''):
+    query_started = time.perf_counter()
     if kind not in ('all', 'nat_sessions', 'events', 'legacy') or limit not in LIMITS:
         raise HTTPException(422, 'Invalid category or row limit')
     fingerprint = hashlib.sha256(json.dumps([kind,keyword,ip,port,severity,hostname,event_type]).encode()).hexdigest()
@@ -60,8 +62,8 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
         return dict(results=rows[:limit],count=min(len(rows),limit),next_cursor=None,start=start.isoformat(),end=end.isoformat(),
                     truncated=len(rows)>limit,notice='Legacy table: bounded results only; narrow time range for more records. Existing TTL is unchanged.')
     subqueries = []
-    for table in ('nat_sessions', 'events') if kind == 'all' else (kind,):
-        nat = table == 'nat_sessions'
+    for table in (('nat_sessions', 'nat_sessions_v2', 'events') if kind == 'all' else ('nat_sessions', 'nat_sessions_v2') if kind == 'nat_sessions' else (kind,)):
+        nat = table.startswith('nat_sessions')
         where = ['timestamp >= {start:DateTime64(3)}', 'timestamp < {end:DateTime64(3)}',
                  'toDate(timestamp) >= toDate({start:DateTime64(3)})', 'toDate(timestamp) <= toDate({end:DateTime64(3)})']
         if ip:
@@ -108,7 +110,7 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
             try:
                 params['before_time'] = utc(position['timestamp'])
                 params['before_id'] = uuid.UUID(position['id'])
-                if position['kind'] not in ('events','nat_sessions'):
+                if position['kind'] not in ('events','nat_sessions','nat_sessions_v2'):
                     raise ValueError()
                 params['before_kind'] = position['kind']
             except (ValueError, KeyError, TypeError):
@@ -119,6 +121,12 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
             selection = common + ", toString(private_ip) AS private_ip, private_port, toString(public_ip) AS public_ip, public_port, toString(destination_ip) AS destination_ip, destination_port, protocol, subscriber_id, '' AS hostname, '' AS event_type, CAST(NULL AS Nullable(UInt8)) AS severity, '' AS message"
         else:
             selection = common + ", '' AS private_ip, toUInt16(0) AS private_port, '' AS public_ip, toUInt16(0) AS public_port, '' AS destination_ip, toUInt16(0) AS destination_port, '' AS protocol, '' AS subscriber_id, hostname, event_type, toNullable(severity) AS severity, message"
+        metadata = ('source_port', 'input_interface', 'output_interface', 'connection_state', 'tcp_flags', 'packet_length', 'syslog_prefix', 'record_type')
+        for field in metadata:
+            if table == 'nat_sessions_v2' or (table == 'events' and field == 'source_port'):
+                selection += ', ' + field
+            else:
+                selection += ', ' + ('toUInt16(0)' if field in ('source_port', 'packet_length') else "''") + ' AS ' + field
         # Qualify native IP predicates so ClickHouse cannot substitute the
         # display toString(...) aliases into an IPv4 equality predicate.
         predicate = re.sub(r'\b(router_ip|private_ip|public_ip|destination_ip)\b', r'source.\1', ' AND '.join(where))
@@ -135,4 +143,4 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
         payload = dict(filter=fingerprint, start=start.isoformat(), end=end.isoformat(),
                        timestamp=utc(last['timestamp']).isoformat(), id=str(last['record_id']), kind=last['kind'])
         next_cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-    return dict(results=rows, count=len(rows), next_cursor=next_cursor, start=start.isoformat(), end=end.isoformat())
+    return dict(query_ms=round((time.perf_counter()-query_started)*1000,2), results=rows, count=len(rows), next_cursor=next_cursor, start=start.isoformat(), end=end.isoformat())

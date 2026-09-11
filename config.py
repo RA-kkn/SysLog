@@ -25,7 +25,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = os.getenv('CONFIG_DB_PATH', str(ROOT / 'devices.db'))
 CLICKHOUSE_HOST = os.getenv('CLICKHOUSE_HOST', 'localhost')
 CLICKHOUSE_PORT = integer('CLICKHOUSE_PORT', 8123)
-CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'syslog')
+CLICKHOUSE_USER = os.getenv('CLICKHOUSE_USER', 'default')
 CLICKHOUSE_PASSWORD = os.getenv('CLICKHOUSE_PASSWORD', '')
 CLICKHOUSE_DB = os.getenv('CLICKHOUSE_DB', 'syslog_db')
 if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', CLICKHOUSE_DB):

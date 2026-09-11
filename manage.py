@@ -12,6 +12,7 @@ def main():
     sub = parser.add_subparsers(dest='command',required=True)
     admin = sub.add_parser('create-admin'); admin.add_argument('username')
     sub.add_parser('init-schema')
+    migration = sub.add_parser('prepare-nat-v2'); migration.add_argument('schema_backup')
     ttl = sub.add_parser('retention-plan'); ttl.add_argument('--days',type=int,default=config.RETENTION_DAYS)
     sub.add_parser('storage')
     backup = sub.add_parser('backup-config'); backup.add_argument('destination')
@@ -27,7 +28,10 @@ def main():
             parser.error('Passwords do not match')
         auth.save_user(args.username,'',password,'ADMIN',True,True)
         print('Administrator created')
-    elif args.command == 'init-schema':
+    elif args.command in ('init-schema', 'prepare-nat-v2'):
+        if args.command == 'prepare-nat-v2':
+            from schema_audit import snapshot
+            snapshot(args.schema_backup)
         # Connect to default first: target database may not exist on fresh installs.
         import clickhouse_connect
         client = clickhouse_connect.get_client(host=config.CLICKHOUSE_HOST,port=config.CLICKHOUSE_PORT,
