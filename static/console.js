@@ -507,7 +507,8 @@ function searchParams() {
 }
 
 const natColumns = [
-    ['subscriber_id','Subscriber/User ID'], ['timestamp','Session Start Time'],
+    ['timestamp','Session Start Time'], ['subscriber_id','Subscriber/User ID'],
+    ['router_ip','Router IP'],
     ['private_ip','Private IP'], ['private_port','Private Port'],
     ['public_ip','Public IP'], ['public_port','Public Port'],
     ['destination_ip','Dest IP'], ['destination_port','Dest Port'],
