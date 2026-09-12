@@ -147,14 +147,14 @@ def migrate_id_schema(client, confirmation, backup):
         raise RuntimeError('NAT table is not empty; migration refused')
     if client.query('SELECT count() FROM system.mutations WHERE database={db:String} AND table=\'nat_sessions_v2\' AND NOT is_done', parameters={'db':db}).result_rows[0][0]:
         raise RuntimeError('Pending mutations; wait before schema transition')
-    definition = client.command(f'SHOW CREATE TABLE {table}')
+    definition = client.command(f'SHOW CREATE TABLE {table}').replace('\\n', '\n').replace("\\'", "'")
     # Preserve the actual live definition, including existing TTL/settings/indexes.
     if not re.search(r'`?record_id`?\s+UUID\b', definition):
         raise RuntimeError('Expected UUID schema; refusing ambiguous/repeated transition')
     replacement = 'nat_sessions_v2_uint64_'+uuid.uuid4().hex[:12]
     changed = re.sub(r'`?record_id`?\s+UUID(?:\s+CODEC\([^\n]*\))?',
                      'record_id UInt64 CODEC(Delta, ZSTD(9))', definition, count=1)
-    changed, renamed = re.subn(r'(?m)^CREATE TABLE\s+(?:`[^`]+`\.)?`?nat_sessions_v2`?',
+    changed, renamed = re.subn(r'(?m)^CREATE TABLE\s+(?:(?:`[^`]+`|[A-Za-z0-9_]+)\.)?`?nat_sessions_v2`?',
                                 f'CREATE TABLE {db}.{replacement}', changed, count=1)
     if renamed != 1:
         raise RuntimeError('Could not build replacement CREATE TABLE safely')
