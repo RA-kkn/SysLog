@@ -86,6 +86,7 @@ def report():
             measured_net_disk_growth_per_day=growth*86400/growth_seconds if growth is not None else None,
             compression_ratio=raw/compressed if compressed else None,
             compressed_bytes_per_row=per_row, uncompressed_bytes_per_row=raw_per_row,
+            total_rows=count,
             **history, daily_budget_bytes=config.STORAGE_BUDGET_BYTES/365,
             annual_safety_margin_bytes=config.STORAGE_BUDGET_BYTES-daily*365 if daily is not None else None,
             database_compressed_bytes=compressed, events_per_minute=eps*60 if eps is not None else None,

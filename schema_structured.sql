@@ -22,22 +22,38 @@ TTL toDateTime(timestamp) + INTERVAL 365 DAY DELETE;
 
 CREATE TABLE IF NOT EXISTS syslog_db.events
 (
- timestamp DateTime64(3, 'UTC') CODEC(Delta, ZSTD(1)),
- received_at DateTime64(3, 'UTC') CODEC(Delta, ZSTD(1)),
- record_id UUID CODEC(ZSTD(1)),
- router_ip IPv4 CODEC(ZSTD(1)),
- source_port UInt16 CODEC(ZSTD(1)),
- hostname LowCardinality(String) CODEC(ZSTD(1)),
- facility UInt8 CODEC(ZSTD(1)),
- severity UInt8 CODEC(ZSTD(1)),
- event_type LowCardinality(String) CODEC(ZSTD(1)),
- message String CODEC(ZSTD(1)),
- raw_message String CODEC(ZSTD(1))
+ timestamp DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9)),
+ received_at DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9)),
+ record_id UUID CODEC(ZSTD(9)),
+ router_ip IPv4 CODEC(ZSTD(9)),
+ source_port UInt16 CODEC(ZSTD(9)),
+ hostname LowCardinality(String) CODEC(ZSTD(9)),
+ facility UInt8 CODEC(ZSTD(9)),
+ severity UInt8 CODEC(ZSTD(9)),
+ event_type LowCardinality(String) CODEC(ZSTD(9)),
+ message String CODEC(ZSTD(9)),
+ raw_message String CODEC(ZSTD(9))
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (toDate(timestamp), router_ip, timestamp, record_id)
 TTL toDateTime(timestamp) + INTERVAL 365 DAY DELETE;
+
+
+-- Compression upgrade for existing events table.
+-- Safe: no DROP/TRUNCATE and no TTL/order changes.
+-- Existing parts adopt the new codec when rewritten/merged; new inserts use it immediately.
+ALTER TABLE syslog_db.events MODIFY COLUMN timestamp DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN received_at DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN record_id UUID CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN router_ip IPv4 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN source_port UInt16 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN hostname LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN facility UInt8 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN severity UInt8 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN event_type LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN message String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.events MODIFY COLUMN raw_message String CODEC(ZSTD(9));
 
 -- Beside historical tables; no backfill, rename or deletion.
 CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions_v2
