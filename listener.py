@@ -20,12 +20,10 @@ import config
 import device_store
 
 from database import get_client, reset_client
+from nat_writer import insert_batch
 from parser import (
     route_syslog,
-    NAT_COLUMNS,
-    EVENT_COLUMNS,
-    NAT_V2_COLUMNS,
-    NAT_V2_DEFAULTS,
+    normalize_spooled,
 )
 
 
@@ -202,6 +200,8 @@ class BatchInserter:
             config.SPOOL_MAX_BYTES,
         )
 
+        with self.spool.connect() as c:
+            self.recovery_ids = {r[0] for r in c.execute("SELECT id FROM batches")}
         self.stopping = threading.Event()
 
         self.writer = threading.Thread(
@@ -244,6 +244,7 @@ class BatchInserter:
         retry = 1
 
         while not self.stopping.is_set():
+            batch = None
             try:
                 batch = self.spool.peek()
 
@@ -261,70 +262,22 @@ class BatchInserter:
                     payload
                 )
 
-                columns_by_table = {
-                    "nat_sessions": NAT_COLUMNS,
-                    "nat_sessions_v2": NAT_V2_COLUMNS,
-                    "events": EVENT_COLUMNS,
-                }
-
-                if table not in columns_by_table:
-                    raise ValueError(
-                        f"Unsupported destination table: {table}"
-                    )
-
-                columns = columns_by_table[
-                    table
-                ]
-
-                # JSON spool serializes datetime/UUID values
-                # as strings. Convert them back before
-                # ClickHouse insertion.
-                for row in rows:
-                    if table == "nat_sessions_v2":
-                        for key, value in NAT_V2_DEFAULTS.items():
-                            row.setdefault(key, value)
-                    row["timestamp"] = (
-                        datetime.fromisoformat(
-                            row["timestamp"]
-                        )
-                    )
-
-                    row["received_at"] = (
-                        datetime.fromisoformat(
-                            row["received_at"]
-                        )
-                    )
-
-                    row["record_id"] = uuid.UUID(
-                        row["record_id"]
-                    )
-
+                rows = [normalize_spooled(table, row) for row in rows]
                 start = time.monotonic()
-
-                get_client().insert(
-                    table,
-                    [
-                        [
-                            row[column]
-                            for column in columns
-                        ]
-                        for row in rows
-                    ],
-                    column_names=columns,
-                )
+                insert_batch(get_client(), rows, recover=batch_id in self.recovery_ids)
 
                 # Important:
                 #
                 # Only ACK/delete spool batch AFTER successful
                 # ClickHouse insertion.
                 #
-                # An ambiguous network failure can potentially
-                # result in a retry. record_id remains stable
-                # across retries.
+                # Stable packet IDs and batch tokens survive retries. Recovery
+                # checks are batch-level and only used after restart/failure.
                 self.spool.ack(
                     batch_id
                 )
 
+                self.recovery_ids.discard(batch_id)
                 self.metrics[
                     "inserted"
                 ] += len(rows)
@@ -388,6 +341,8 @@ class BatchInserter:
                 retry = 1
 
             except Exception:
+                if batch:
+                    self.recovery_ids.add(batch[0])
                 self.metrics[
                     "write_failures"
                 ] += 1
@@ -441,7 +396,7 @@ def worker_main(
 
         parsed=0,
         nat_parsed=0,
-        events_parsed=0,
+        normalized_fallback=0,
 
         inserted=0,
         spooled=0,
@@ -480,9 +435,7 @@ def worker_main(
 
     def process():
         batches = {
-            "nat_sessions": [],
             "nat_sessions_v2": [],
-            "events": [],
         }
 
         observations = Counter()
@@ -550,16 +503,14 @@ def worker_main(
                             "parsed"
                         ] += 1
 
-                        if table.startswith(
-                            "nat_sessions"
-                        ):
+                        if row["parse_status"] == "parsed":
                             metrics[
                                 "nat_parsed"
                             ] += 1
 
                         else:
                             metrics[
-                                "events_parsed"
+                                "normalized_fallback"
                             ] += 1
 
                         metrics[

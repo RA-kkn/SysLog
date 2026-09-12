@@ -1,5 +1,5 @@
 -- Structured definitions are mirrored from schema_structured.sql.
--- CREATE IF NOT EXISTS and ADD COLUMN only; existing TTL/order/codecs are unchanged.
+-- Additive columns and retry setting; existing TTL/order/codecs are unchanged.
 -- Additive only. Does not change syslogs or its existing 90-day TTL.
 CREATE DATABASE IF NOT EXISTS syslog_db;
 CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions
@@ -63,7 +63,13 @@ CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions_v2
  tcp_flags LowCardinality(String) CODEC(ZSTD(9)),
  packet_length UInt16 CODEC(ZSTD(9)),
  syslog_prefix String CODEC(ZSTD(9)),
- record_type LowCardinality(String) CODEC(ZSTD(9))
+ record_type LowCardinality(String) CODEC(ZSTD(9)),
+ field_mask UInt8 DEFAULT 63 CODEC(ZSTD(9)),
+ raw_message String CODEC(ZSTD(9)),
+ raw_bytes_b64 String CODEC(ZSTD(9)),
+ parse_status LowCardinality(String) DEFAULT 'legacy' CODEC(ZSTD(9)),
+ application LowCardinality(String) CODEC(ZSTD(9)),
+ migration_source LowCardinality(String) CODEC(ZSTD(9))
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(timestamp)
@@ -130,3 +136,22 @@ TTL toDateTime(received_at) + INTERVAL 365 DAY DELETE
 
 SETTINGS
     index_granularity = 8192;
+
+-- Metadata-only compatibility for installations with the earlier 12-column V2.
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS source_port UInt16 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS input_interface String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS output_interface LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS connection_state LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS tcp_flags LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS packet_length UInt16 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS syslog_prefix String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS record_type LowCardinality(String) CODEC(ZSTD(9));
+
+-- NAT-only normalization: existing native fields/types/codecs/TTL unchanged.
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS field_mask UInt8 DEFAULT 63 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS raw_message String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS raw_bytes_b64 String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS parse_status LowCardinality(String) DEFAULT 'legacy' CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS application LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS migration_source LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 MODIFY SETTING non_replicated_deduplication_window = 10000;

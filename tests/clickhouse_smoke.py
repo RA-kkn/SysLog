@@ -1,80 +1,94 @@
-"""Opt-in integration test. Creates an isolated DB and retains it for inspection."""
-import os
+"""Isolated real ClickHouse test. Creates and RETAINS test data; no destructive SQL."""
 import sys
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from parser import route_syslog, NAT_COLUMNS, NAT_V2_COLUMNS, EVENT_COLUMNS
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from parser import route_syslog, NAT_COLUMNS, NAT_V2_COLUMNS, EVENT_COLUMNS, parse_syslog
 from test_nat_search import SAMPLE
+from nat_writer import insert_batch
+from nat_view import DISPLAY_FIELDS
+from migrate_events import migrate
+from schema_audit import validate
 import config
 import search
-from schema_audit import validate
 import clickhouse_connect
 
 
 def main():
     if '--confirm-test-target' not in sys.argv:
         raise SystemExit('Requires --confirm-test-target on an isolated server')
-    client=clickhouse_connect.get_client(host=config.CLICKHOUSE_HOST,port=config.CLICKHOUSE_PORT,
-        username=config.CLICKHOUSE_USER,password=config.CLICKHOUSE_PASSWORD)
-    database='search_test_'+uuid.uuid4().hex[:12]
+    connection=dict(host=config.CLICKHOUSE_HOST,port=config.CLICKHOUSE_PORT,username=config.CLICKHOUSE_USER,password=config.CLICKHOUSE_PASSWORD)
+    client=clickhouse_connect.get_client(**connection)
+    database='nat_only_test_'+uuid.uuid4().hex[:12]
     schema=(config.ROOT/'schema_structured.sql').read_text(encoding='utf-8')
     schema='\n'.join(line for line in schema.splitlines() if not line.strip().startswith('--'))
     client.command(f'CREATE DATABASE {database}')
     old_definition=schema.split('CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions\n',1)[1].split(';',1)[0]
     client.command(f'CREATE TABLE {database}.nat_sessions_v2\n'+old_definition)
-    _,old_row,_=route_syslog(SAMPLE.encode(),'192.0.2.10',12345,datetime.now(timezone.utc)-timedelta(minutes=2))
-    old_row['record_id']=uuid.UUID(old_row['record_id'])
-    client.insert(f'{database}.nat_sessions_v2',[[old_row[k] for k in NAT_COLUMNS]],column_names=NAT_COLUMNS)
+    stamp=datetime.now(timezone.utc).replace(microsecond=0)-timedelta(minutes=2)
+    def normalize(raw):
+        row=route_syslog(raw,'192.0.2.10',12345,stamp)[1]
+        row['record_id']=uuid.UUID(row['record_id'])
+        return row
+    old=normalize(SAMPLE.encode())
+    client.insert(f'{database}.nat_sessions_v2',[[old[k] for k in NAT_COLUMNS]],column_names=NAT_COLUMNS)
     for _ in range(2):
         for statement in schema.replace('syslog_db',database).split(';'):
-            if statement.strip(): client.command(statement)
-    assert client.query(f'SELECT count() FROM {database}.nat_sessions_v2').result_rows[0][0]==1
-
-    with patch.object(config,'CLICKHOUSE_DB',database): validate(client)
-    target=clickhouse_connect.get_client(host=config.CLICKHOUSE_HOST,port=config.CLICKHOUSE_PORT,
-        username=config.CLICKHOUSE_USER,password=config.CLICKHOUSE_PASSWORD,database=database)
-    stamp=datetime.now(timezone.utc)-timedelta(minutes=1)
-    for raw,n,columns in [(SAMPLE.encode(),151,NAT_V2_COLUMNS),(b'<134>1 2026-09-12T00:00:00Z router app - - - normal event 443',110,EVENT_COLUMNS)]:
-        rows=[]
-        for i in range(n):
-            table,row,_=route_syslog(raw,'192.0.2.10',12345,stamp)
-            row['timestamp']=stamp;row['record_id']=uuid.UUID(row['record_id'])
-            rows.append([row[k] for k in columns])
-        target.insert(table,rows,column_names=columns)
+            if statement.strip():client.command(statement)
+    mirror=(config.ROOT/'schema.sql').read_text(encoding='utf-8')
+    mirror='\n'.join(line for line in mirror.splitlines() if not line.strip().startswith('--'))
+    for statement in mirror.replace('syslog_db',database).split(';'):
+        if statement.strip():client.command(statement)
+    with patch.object(config,'CLICKHOUSE_DB',database):validate(client)
+    target=clickhouse_connect.get_client(**connection,database=database)
+    assert target.query('SELECT count() FROM nat_sessions_v2').result_rows[0][0]==1
+    rows=[normalize(SAMPLE.replace(', len 52',', prio 7->0, len 52').encode()) for _ in range(151)]
+    rows += [normalize(b'unknown\xff\x00') for _ in range(110)]
+    rows += [normalize(b'NAT private_ip=0.0.0.0 private_port=0 proto ICMP')]
+    insert_batch(target,rows)
+    insert_batch(target,rows)  # Repeated token must not insert another batch.
+    assert insert_batch(target,rows,recover=True)==0
+    assert target.query('SELECT count(),uniqExact(record_id) FROM nat_sessions_v2').result_rows[0]==(263,263)
     with patch('search.get_client',return_value=target):
-        first=search.query_logs(limit=100)
-        assert first['total_count']==262 and first['count']==100, first
-        ids=set()
-        page=first
-        kinds=set()
+        page=search.query_logs(limit=100)
+        seen=0;cursors=set()
         while True:
-            assert page['total_count']==262
-            for row in page['results']:
-                assert row['record_id'] not in ids
-                ids.add(row['record_id']);kinds.add(row['kind'])
+            assert page['total_count']==263
+            seen+=page['count']
+            assert all(tuple(row)==DISPLAY_FIELDS for row in page['results'])
             if not page['next_cursor']:break
+            assert page['next_cursor'] not in cursors
+            cursors.add(page['next_cursor'])
             page=search.query_logs(limit=100,cursor=page['next_cursor'])
-        assert len(ids)==262 and kinds=={'nat_sessions_v2','events'}
+        assert seen==263
         for term in ('100.68.180.201','103.125.177.119','pppoe-S-jameel','443','pppoe-S-jameel,443'):
-            result=search.query_logs(kind='nat_sessions',keyword=term)
-            assert result['total_count']==152, (term,result)
-            assert result['results'][0]['tcp_flags']=='ACK,RST'
-            assert result['results'][0]['source_port']==12345
-        assert search.query_logs(keyword='443')['total_count']==262
-        assert search.query_logs(keyword='missing')['total_count']==0
-        assert search.query_logs(kind='events')['total_count']==110
-    import compression
-    import tempfile
-    with tempfile.TemporaryDirectory() as folder, patch.object(config,'CLICKHOUSE_DB',database), patch('compression.get_client',return_value=target), patch('schema_audit.get_client',return_value=target):
-        compression.apply(str(Path(folder)/'before-codecs.json'))
-        assert target.query('SELECT count() FROM nat_sessions_v2').result_rows[0][0]==152
-        assert (Path(folder)/'before-codecs.json').exists()
-    print('PASS: real codec ALTER to ZSTD(9), saved schema, verified codecs, 152 NAT rows preserved')
-    print(f'PASS: {database}: 262 real ClickHouse rows, exact totals across 3 pages, both kinds, five NAT searches, numeric mixed search, diagnostics, no duplicates skipped, 12-column upgrade applied twice preserves old row. Test tables retained.')
+            assert search.query_logs(keyword=term)['total_count']==152
+        assert search.query_logs(keyword='0.0.0.0')['total_count']==1
+        assert search.query_logs(port=0)['total_count']==1
+        assert search.query_logs(keyword='ICMP')['results'][0]['protocol']=='ICMP'
+        for kind in ('all','events','legacy'):
+            try:search.query_logs(kind=kind)
+            except Exception as exc:assert exc.status_code==422
+            else:raise AssertionError('Deprecated kind accepted')
+    # Historical source fixtures are inserted only by this test, never the listener.
+    source=[]
+    for raw in (SAMPLE.encode(),b'NAT private_ip=10.0.0.1 proto ICMP',b'router rebooted'):
+        parsed=parse_syslog(raw,'192.0.2.10',12345,stamp)
+        event=dict(timestamp=stamp,received_at=stamp,record_id=uuid.uuid4(),router_ip='192.0.2.10',source_port=12345,
+                   hostname='',facility=1,severity=6,event_type='nat_unparsed',message=parsed['message'],raw_message=raw.decode())
+        source.append([event[k] for k in EVENT_COLUMNS])
+    target.insert('events',source,column_names=EVENT_COLUMNS)
+    bounds=(stamp-timedelta(seconds=1),stamp+timedelta(seconds=1))
+    dry=migrate(target,*bounds,batch_size=2)
+    assert (dry['source_rows'],dry['eligible'],dry['missing'])==(3,2,2),dry
+    first=migrate(target,*bounds,apply=True,batch_size=2)
+    assert first['complete'] and first['inserted']==2 and first['verified']==2,first
+    second=migrate(target,*bounds,apply=True,batch_size=2)
+    assert second['complete'] and second['inserted']==0 and second['already_verified']==2,second
+    assert target.query('SELECT count() FROM events').result_rows[0][0]==3
+    assert target.query('SELECT count(),uniqExact(record_id) FROM nat_sessions_v2').result_rows[0]==(265,265)
+    print(f'PASS {database}: additive upgrade twice retains old row; 262 packets -> 262 new rows; retry token/recovery no duplicates; exact totals/3-page NAT-only search; unknown defaults excluded from zero matches; migration 3 sources, 2 eligible, 2 verified, rerun inserts 0; all source data retained.')
 
-
-if __name__=='__main__': main()
+if __name__=='__main__':main()

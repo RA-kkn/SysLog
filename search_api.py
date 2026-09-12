@@ -19,6 +19,7 @@ import config
 import device_store
 from database import get_client, reset_client
 from search import query_logs
+from nat_view import DISPLAY_COLUMNS, export_value
 from monitoring import report
 
 logging.basicConfig(level=logging.INFO)
@@ -82,7 +83,7 @@ def logout(request: Request, response: Response, user=Depends(auth.current)):
     response.delete_cookie('session', path='/')
     return {'ok':True}
 
-def search_options(kind: str='all', keyword: str=Query('',max_length=512), ip: str='',
+def search_options(kind: str='nat_sessions_v2', keyword: str=Query('',max_length=512), ip: str='',
                    start: Optional[datetime]=None, end: Optional[datetime]=None,
                    limit: int=200, cursor: Optional[str]=None,
                    port: Optional[int]=Query(None,ge=0,le=65535),
@@ -113,17 +114,17 @@ def export(options=Depends(search_options), user=Depends(auth.current)):
     first = search_logs(options, user)
     def stream():
         batch, written = first, 0
-        fields = list(batch['results'][0]) if batch['results'] else ['timestamp','router_ip','message']
+        fields = [key for key,_ in DISPLAY_COLUMNS]
         out = io.StringIO()
         writer = csv.writer(out)
-        writer.writerow(fields)
+        writer.writerow([label for _,label in DISPLAY_COLUMNS])
         yield out.getvalue()
         while True:
             for row in batch['results']:
                 if written >= config.EXPORT_LIMIT:
                     return
                 out.seek(0); out.truncate(0)
-                writer.writerow([csv_value(row.get(k)) for k in fields])
+                writer.writerow([csv_value(export_value(k,row.get(k))) for k in fields])
                 written += 1
                 yield out.getvalue()
             if not batch['next_cursor'] or written >= config.EXPORT_LIMIT:

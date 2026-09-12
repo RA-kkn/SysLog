@@ -17,7 +17,8 @@ run_admin() {
 }
 run_admin manage.py backup-config "data/backups/config-${stamp}.db"
 run_admin manage.py prepare-nat-v2 "data/backups/schema-${stamp}.json"
-run_admin manage.py compression-plan --apply --schema-backup "data/backups/codecs-${stamp}.json"
+# Existing codecs are preserved during the NAT-only upgrade. A separate
+# compression-plan command remains available for an explicit later change.
 run_admin manage.py set-display-timezone Asia/Karachi
 systemctl restart syslog-console-listener syslog-console-api
 systemctl is-active syslog-console-listener syslog-console-api

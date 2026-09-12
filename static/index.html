@@ -22,11 +22,11 @@
 
 <div class="account"><span id="account"></span><select id="theme" aria-label="Theme"><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select><button id="logout" class="secondary">Logout</button></div></header>
 
-<main><section id="page-search" class="page"><div class="page-heading"><div><p class="eyebrow">INVESTIGATE</p><h1>Log Search</h1><p class="muted">NAT sessions and network events. <span id="timezone"></span></p></div><button id="export" class="secondary">Export CSV</button></div>
+<main><section id="page-search" class="page"><div class="page-heading"><div><p class="eyebrow">INVESTIGATE</p><h1>Log Search</h1><p class="muted">NAT records, including normalized incomplete packets. <span id="timezone"></span></p></div><button id="export" class="secondary">Export CSV</button></div>
 
 <form id="searchForm" class="card filters"><label class="grow">Search<input id="keyword" placeholder="IP, subscriber, port — comma = AND" maxlength="512"></label>
 
-<label>Router IP<input id="router" placeholder="All routers (including history)"></label><label>Log type<select id="kind"><option value="all">All Logs</option><option value="nat_sessions">NAT Sessions</option><option value="events">Events</option><option value="legacy">Legacy history</option></select></label>
+<label>Router IP<input id="router" placeholder="All routers (including history)"></label><label>Log type<select id="kind"><option value="nat_sessions_v2">NAT</option></select></label>
 
 <label>Time range<select id="range"><option value="1">Last hour</option><option value="24" selected>Last 24 hours</option><option value="168">Last 7 days</option><option value="custom">Custom UTC</option></select></label>
 
@@ -34,7 +34,7 @@
 
 <div id="customRange" class="filters" hidden><label>From (UTC)<input id="start" type="datetime-local"></label><label>To (UTC, exclusive)<input id="end" type="datetime-local"></label></div>
 
-</form><div class="card results"><div class="result-bar"><span id="searchStatus">Loading recent logs...</span><button id="previous" class="secondary" disabled>Previous page</button><button id="next" class="secondary" disabled>Next page →</button></div><div class="table-wrap"><table><thead><tr id="logHeader"><th>Timestamp</th><th>Router</th><th>Type</th><th>Private endpoint</th><th>Public endpoint</th><th>Destination</th><th>Protocol</th><th>Subscriber / Message</th></tr></thead><tbody id="logs"></tbody></table></div></div></section>
+</form><div class="card results"><div class="result-bar"><span id="searchStatus">Loading recent logs...</span><button id="previous" class="secondary" disabled>Previous page</button><button id="next" class="secondary" disabled>Next page →</button></div><div class="table-wrap"><table><thead><tr id="logHeader"><th>Private IP</th><th>Private Port</th><th>Public IP</th><th>Public Port</th><th>Dest IP</th><th>Dest Port</th><th>Protocol/App</th><th>Session Start Time</th><th>Subscriber/User ID</th></tr></thead><tbody id="logs"></tbody></table></div></div></section>
 
 <section id="page-devices" class="page" hidden><div class="page-heading"><div><p class="eyebrow">ACCESS CONTROL</p><h1>Devices</h1><p class="muted">Only approved router sources are ingested. Changes reach listeners within 5 seconds.</p></div><button id="refreshDevices" class="secondary">Refresh</button></div>
 

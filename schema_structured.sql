@@ -40,20 +40,7 @@ ORDER BY (toDate(timestamp), router_ip, timestamp, record_id)
 TTL toDateTime(timestamp) + INTERVAL 365 DAY DELETE;
 
 
--- Compression upgrade for existing events table.
--- Safe: no DROP/TRUNCATE and no TTL/order changes.
--- Existing parts adopt the new codec when rewritten/merged; new inserts use it immediately.
-ALTER TABLE syslog_db.events MODIFY COLUMN timestamp DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN received_at DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN record_id UUID CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN router_ip IPv4 CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN source_port UInt16 CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN hostname LowCardinality(String) CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN facility UInt8 CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN severity UInt8 CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN event_type LowCardinality(String) CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN message String CODEC(ZSTD(9));
-ALTER TABLE syslog_db.events MODIFY COLUMN raw_message String CODEC(ZSTD(9));
+-- Events is historical only. No new application writes or automatic backfill.
 
 -- Beside historical tables; no backfill, rename or deletion.
 CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions_v2
@@ -77,7 +64,13 @@ CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions_v2
  tcp_flags LowCardinality(String) CODEC(ZSTD(9)),
  packet_length UInt16 CODEC(ZSTD(9)),
  syslog_prefix String CODEC(ZSTD(9)),
- record_type LowCardinality(String) CODEC(ZSTD(9))
+ record_type LowCardinality(String) CODEC(ZSTD(9)),
+ field_mask UInt8 DEFAULT 63 CODEC(ZSTD(9)),
+ raw_message String CODEC(ZSTD(9)),
+ raw_bytes_b64 String CODEC(ZSTD(9)),
+ parse_status LowCardinality(String) DEFAULT 'legacy' CODEC(ZSTD(9)),
+ application LowCardinality(String) CODEC(ZSTD(9)),
+ migration_source LowCardinality(String) CODEC(ZSTD(9))
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(timestamp)
@@ -93,3 +86,12 @@ ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS tcp_flags LowCard
 ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS packet_length UInt16 CODEC(ZSTD(9));
 ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS syslog_prefix String CODEC(ZSTD(9));
 ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS record_type LowCardinality(String) CODEC(ZSTD(9));
+
+-- NAT-only normalization: existing native fields/types/codecs/TTL unchanged.
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS field_mask UInt8 DEFAULT 63 CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS raw_message String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS raw_bytes_b64 String CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS parse_status LowCardinality(String) DEFAULT 'legacy' CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS application LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 ADD COLUMN IF NOT EXISTS migration_source LowCardinality(String) CODEC(ZSTD(9));
+ALTER TABLE syslog_db.nat_sessions_v2 MODIFY SETTING non_replicated_deduplication_window = 10000;

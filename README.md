@@ -2,6 +2,10 @@
 
 In-place upgrade of the existing UDP collector, ClickHouse storage, SQLite device approval, FastAPI and static web console.
 
+**Current architecture: NAT-only.** Read [NAT_ONLY.md](NAT_ONLY.md) for additive deployment,
+fallback/raw preservation, historical Events migration and packet-count verification.
+It supersedes older All Logs/Events UI instructions and raw-free compression estimates.
+
 ## This Windows machine: run without Docker
 
 Ubuntu/WSL and native ClickHouse 26.8.2.7 are now installed. From PowerShell in this directory:
@@ -17,7 +21,7 @@ Validated on this machine after setup: real ClickHouse connection, additive sche
 - Manual router IP approval and automatic Pending discovery; only approved sources ingest.
 - Expiring login sessions, ADMIN / OPERATOR / VIEWER roles, CSRF protection and user management.
 - Bounded UDP queue, batched parsing, durable bounded spool and retrying ClickHouse writes.
-- Separate structured NAT and Events tables; unknown formats preserve original messages.
+- One production destination (`nat_sessions_v2`); unknown formats preserve original messages in hidden backend columns. Historical Events remain intact.
 - Time-bounded IP/subscriber search, comma-separated AND terms, keyset pages and bounded CSV export.
 - Branding, dark/light/system themes, system health and measured storage projections.
 

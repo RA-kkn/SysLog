@@ -25,9 +25,10 @@ def snapshot(destination):
 def validate(client):
     import re
     schema = (config.ROOT/'schema_structured.sql').read_text(encoding='utf-8')
-    for table in ('nat_sessions', 'nat_sessions_v2', 'events'):
+    for table in ('nat_sessions_v2',):
         definition = schema.split('CREATE TABLE IF NOT EXISTS syslog_db.'+table+'\n',1)[1].split('ENGINE',1)[0]
         expected = dict(re.findall(r"^\s*(\w+)\s+(.+?)\s+CODEC", definition, re.MULTILINE))
+        expected = {name: typ.split(' DEFAULT ',1)[0] for name,typ in expected.items()}
         actual = dict(client.query('SELECT name,type FROM system.columns WHERE database={db:String} AND table={table:String}',parameters={'db':config.CLICKHOUSE_DB,'table':table}).result_rows)
         mismatch = [name for name,typ in expected.items() if actual.get(name) != typ]
         if mismatch:

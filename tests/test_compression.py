@@ -6,8 +6,8 @@ class CompressionTests(unittest.TestCase):
     def test_plan_is_codec_only(self):
         import compression
         sql=compression.plan()
-        self.assertEqual(sql.count('MODIFY COLUMN'),20)
-        self.assertEqual(sql.count('ZSTD(9)'),20)
+        self.assertEqual(sql.count('MODIFY COLUMN'),26)
+        self.assertEqual(sql.count('ZSTD(9)'),26)
         self.assertEqual(sql.count('Delta'),2)
         self.assertNotIn('OPTIMIZE',sql)
         self.assertNotIn('MODIFY TTL',sql)

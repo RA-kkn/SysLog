@@ -9,7 +9,8 @@ def fields():
     sql=(config.ROOT/'schema_structured.sql').read_text(encoding='utf-8')
     definition=sql.split('CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions_v2',1)[1].split('ENGINE',1)[0]
     result=re.findall(r'^\s*(\w+)\s+.+?\s+CODEC\((.+)\),?$',definition,re.MULTILINE)
-    if len(result)!=20 or any('ZSTD(9)' not in codec for _,codec in result):
+    from parser import NAT_V2_COLUMNS
+    if {name for name,_ in result}!=set(NAT_V2_COLUMNS) or any('ZSTD(9)' not in codec for _,codec in result):
         raise RuntimeError('Unexpected NAT codec schema; nothing applied')
     return result
 

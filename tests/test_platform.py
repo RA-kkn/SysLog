@@ -131,7 +131,7 @@ class PlatformTests(unittest.TestCase):
         fake=SimpleNamespace(query=lambda sql,**kw:self.capture(sql,kw))
         with patch('search.get_client',return_value=fake):
             search.query_logs(kind='nat_sessions',keyword='100.64.0.1,443')
-        self.assertIn('private_ip = {term0:IPv4}',self.sql)
+        self.assertIn('private_ip={term0:IPv4}',self.sql)
         self.assertIn('timestamp >=',self.sql)
         self.assertIn('LIMIT {limit:UInt32}',self.sql)
         self.assertNotIn('OFFSET',self.sql)
@@ -139,7 +139,7 @@ class PlatformTests(unittest.TestCase):
 
     def capture(self,sql,kw):
         self.sql,self.kw=sql,kw
-        return SimpleNamespace(column_names=['total'],result_rows=[(0,)]) if 'SELECT sum(matches)' in sql else SimpleNamespace(column_names=[],result_rows=[])
+        return SimpleNamespace(column_names=['total'],result_rows=[(0,)]) if 'SELECT count()' in sql else SimpleNamespace(column_names=[],result_rows=[])
 
     def test_cursor_equal_timestamps(self):
         stamp=datetime.now(timezone.utc)
@@ -147,13 +147,13 @@ class PlatformTests(unittest.TestCase):
         result=SimpleNamespace(column_names=['timestamp','record_id','kind'],result_rows=[(stamp,i,'events') for i in ids])
         with patch('search.get_client') as client:
             client.return_value.query.return_value=result
-            first=search.query_logs(kind='events',limit=100)
+            first=search.query_logs(limit=100,include_total=False)
             self.assertTrue(first['next_cursor'])
-            client.return_value.query.side_effect=lambda sql,**kw: SimpleNamespace(column_names=['total'],result_rows=[(101,)]) if 'SELECT sum(matches)' in sql else SimpleNamespace(column_names=[],result_rows=[])
-            search.query_logs(kind='events',limit=100,cursor=first['next_cursor'])
+            client.return_value.query.side_effect=lambda sql,**kw: SimpleNamespace(column_names=['total'],result_rows=[(101,)]) if 'SELECT count()' in sql else SimpleNamespace(column_names=[],result_rows=[])
+            search.query_logs(limit=100,cursor=first['next_cursor'])
             sql=client.return_value.query.call_args.args[0]
-            self.assertIn('(timestamp, record_id,',sql)
-            with self.assertRaises(Exception):search.query_logs(kind='nat_sessions',limit=100,cursor=first['next_cursor'])
+            self.assertIn('(source.timestamp,source.record_id)',sql)
+            with self.assertRaises(Exception):search.query_logs(keyword='changed',limit=100,cursor=first['next_cursor'])
 
     def test_invalid_limits_and_cursor(self):
         self.signin()
@@ -163,7 +163,7 @@ class PlatformTests(unittest.TestCase):
     def test_csv_formula_safety(self):
         self.assertEqual(search_api.csv_value('=SUM(A1)'),"'=SUM(A1)")
         self.signin()
-        response=dict(results=[{'timestamp':'2026','message':'=1+1'}],next_cursor=None)
+        response=dict(results=[{'timestamp':'2026-09-12T00:00:00Z','subscriber_id':'=1+1'}],next_cursor=None)
         with patch('search_api.query_logs',return_value=response):
             r=self.client.get('/api/export?keyword=test')
         self.assertEqual(r.status_code,200);self.assertIn("'=1+1",r.text)
@@ -171,18 +171,18 @@ class PlatformTests(unittest.TestCase):
 class IngestionTests(unittest.TestCase):
     def test_nat_compact(self):
         table,row,failed=route_syslog(payload(1),'192.0.2.1',514,datetime.now(timezone.utc))
-        self.assertEqual(table,'nat_sessions');self.assertFalse(failed)
-        self.assertNotIn('raw_message',row);self.assertIsInstance(row['private_port'],int)
+        self.assertEqual(table,'nat_sessions_v2');self.assertFalse(failed)
+        self.assertEqual(row['raw_message'],payload(1).decode());self.assertIsInstance(row['private_port'],int)
 
     def test_unknown_nat_preserved(self):
         for raw in (payload(1)+b' bytes=123',payload(1).replace(b'private_port=1025',b'private_port=99999'),b'NAT invalid'):
             table,row,failed=route_syslog(raw,'192.0.2.1',514,datetime.now(timezone.utc))
-            self.assertEqual(table,'events');self.assertEqual(row['raw_message'],raw.decode())
+            self.assertEqual(table,'nat_sessions_v2');self.assertEqual(row['raw_message'],raw.decode())
 
     def test_syslog_envelope_preserved(self):
         raw=b'<134>1 2026-09-11T12:00:00+05:00 router app 1 - - hello'
         table,row,_=route_syslog(raw,'192.0.2.1',514,datetime.now(timezone.utc))
-        self.assertEqual(table,'events');self.assertEqual(row['timestamp'].hour,7)
+        self.assertEqual(table,'nat_sessions_v2');self.assertEqual(row['timestamp'].hour,7)
         self.assertEqual(row['raw_message'],raw.decode())
 
     def test_spool_survives_restart_and_is_bounded(self):
@@ -198,6 +198,7 @@ class IngestionTests(unittest.TestCase):
     def test_writer_retries_without_discard(self):
         with tempfile.TemporaryDirectory() as folder,patch.object(config,'DATA_DIR',Path(folder)),patch('listener.get_client') as client:
             client.return_value.insert.side_effect=[RuntimeError('offline'),None]
+            client.return_value.query.return_value=SimpleNamespace(result_rows=[])
             metrics=Counter();writer=BatchInserter(0,metrics)
             table,row,_=route_syslog(payload(1),'192.0.2.1',514,datetime.now(timezone.utc))
             writer.persist(table,[row])

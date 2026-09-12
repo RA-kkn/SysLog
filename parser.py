@@ -1,4 +1,5 @@
 import os
+import base64
 import re
 import uuid
 import ipaddress
@@ -486,7 +487,8 @@ EVENT_COLUMNS = [
 
 # Persist all diagnostic fields. Old spool rows receive explicit defaults.
 NAT_V2_DEFAULTS = dict(source_port=0, input_interface='', output_interface='',
-    connection_state='', tcp_flags='', packet_length=0, syslog_prefix='', record_type='')
+    connection_state='', tcp_flags='', packet_length=0, syslog_prefix='', record_type='', field_mask=63, raw_message='', raw_bytes_b64='',
+    parse_status='legacy', application='', migration_source='')
 NAT_V2_COLUMNS = NAT_COLUMNS + list(NAT_V2_DEFAULTS)
 
 
@@ -776,276 +778,137 @@ def mikrotik_snat(message):
 # ROUTING
 # ============================================================
 
-def route_syslog(
-    raw,
-    src_ip,
-    src_port,
-    received_at,
-):
-    """
-    Route packet to:
+# The six bits distinguish unknown defaults from genuinely observed zero values.
+ENDPOINT_FIELDS = ('private_ip', 'private_port', 'public_ip', 'public_port', 'destination_ip', 'destination_port')
+FIELD_BITS = {name: 1 << i for i, name in enumerate(ENDPOINT_FIELDS)}
 
-        nat_sessions_v2
-        nat_sessions
-        events
 
-    Timestamp priority:
-
-        1. Timestamp inside the router/syslog packet
-        2. Server receive timestamp ONLY as fallback
-    """
-
-    received_at = _normalise_received_at(
-        received_at
-    )
-
-    legacy = parse_syslog(
-        raw,
-        src_ip,
-        src_port,
-        received_at,
-    )
-
-    # --------------------------------------------------------
-    # MAIN SEARCHABLE TIMESTAMP
-    # --------------------------------------------------------
-    #
-    # This is the router / packet timestamp where available.
-    #
-    stamp = legacy["device_time"]
-
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(
-            tzinfo=timezone.utc
-        )
-
-    stamp = stamp.astimezone(
-        timezone.utc
-    )
-
-    base = {
-        "timestamp": stamp,
-
-        # Keep receive time separately for diagnostics.
-        "received_at": received_at,
-
-        "record_id": str(
-            uuid.uuid4()
-        ),
-
-        "router_ip": str(
-            ipaddress.ip_address(
-                src_ip
-            )
-        ),
-    }
-
-    message = (
-        legacy.get("message")
-        or ""
-    )
-
-    # --------------------------------------------------------
-    # 1. MikroTik SNAT FIRST
-    # --------------------------------------------------------
-    #
-    # NAT/SNAT classification MUST take priority over words
-    # such as "pppoe" in the interface name.
-    #
-    # IMPORTANT FIX:
-    #
-    # Match the complete packet so its envelope is retained in syslog_prefix.
-    #
+def preserve_raw(raw):
     try:
-        translated = mikrotik_snat(
-            raw
-        )
+        return raw.decode('utf-8'), ''
+    except UnicodeDecodeError:
+        return raw.decode('utf-8', errors='replace'), base64.b64encode(raw).decode('ascii')
 
-        if translated:
-            return (
-                "nat_sessions_v2",
 
-                {
-                    **base,
-                    **translated,
+def empty_record(raw, src_ip, src_port, received_at, stamp=None):
+    text, binary = preserve_raw(raw)
+    received_at = _normalise_received_at(received_at)
+    row = dict(NAT_V2_DEFAULTS, timestamp=stamp or received_at, received_at=received_at,
+        record_id=str(uuid.uuid4()), router_ip=src_ip, protocol='', subscriber_id='',
+        source_port=src_port, field_mask=0, raw_message=text, raw_bytes_b64=binary,
+        parse_status='unknown', record_type='normalized_syslog')
+    for key in ENDPOINT_FIELDS:
+        row[key] = '0.0.0.0' if key.endswith('_ip') else 0
+    return row
 
-                    "source_port": src_port,
-                },
 
-                False,
-            )
+def strict_key_value(message):
+    if not message.startswith('NAT '):
+        return None
+    pairs=[part.split('=',1) for part in message[4:].split()]
+    fields=dict(pairs)
+    if len(fields)!=len(pairs) or set(fields)!=NAT_KEYS:
+        return None
+    for key in ENDPOINT_FIELDS:
+        fields[key] = str(ipaddress.IPv4Address(fields[key])) if key.endswith('_ip') else int(fields[key])
+        if key.endswith('_port') and not 0 <= fields[key] <= 65535:
+            return None
+    if fields['protocol'].lower() not in ('tcp','udp'):
+        return None
+    fields['protocol']=fields['protocol'].lower()
+    return fields
 
-    except (
-        ValueError,
-        UnicodeError,
-        ipaddress.AddressValueError,
-    ):
-        # Preserve as raw Event below.
-        pass
 
-    # --------------------------------------------------------
-    # 2. Documented key=value NAT format
-    # --------------------------------------------------------
-
-    if (
-        legacy["process_name"] == "unknown"
-        and message.startswith("NAT ")
-    ):
+def fallback_normalize(row, message):
+    # Only use labelled fields or the explicit source-NAT translation expression.
+    # An arbitrary IP in an event is not assumed to be a private/public address.
+    conflicts=set()
+    def assign(key,value):
+        if key in conflicts:
+            return
         try:
-            tokens = (
-                message[4:]
-                .strip()
-                .split()
-            )
+            value=str(ipaddress.IPv4Address(value)) if key.endswith('_ip') else int(value)
+            if key.endswith('_port') and not 0 <= value <= 65535:
+                return
+        except (ValueError,TypeError):
+            return
+        bit=FIELD_BITS[key]
+        if row['field_mask'] & bit and row[key]!=value:
+            row['field_mask'] &= ~bit
+            row[key]='0.0.0.0' if key.endswith('_ip') else 0
+            conflicts.add(key)
+            return
+        row[key]=value; row['field_mask'] |= bit
 
-            pairs = [
-                token.split("=", 1)
-                for token in tokens
-            ]
+    aliases={'private_ip':'private_ip','private_port':'private_port','public_ip':'public_ip',
+             'public_port':'public_port','destination_ip':'destination_ip','destination_port':'destination_port',
+             'dest_ip':'destination_ip','dest_port':'destination_port'}
+    for match in re.finditer(r'\b(private_ip|private_port|public_ip|public_port|destination_ip|destination_port|dest_ip|dest_port)\s*[=:]\s*([^\s,;]+)',message,re.I):
+        assign(aliases[match[1].lower()],match[2])
+    endpoint=r'(?P<{name}_ip>\d{{1,3}}(?:\.\d{{1,3}}){{3}})(?::(?P<{name}_port>\d+))?'
+    translation=re.search(r'\bNAT\s*\(\s*'+endpoint.format(name='private')+r'\s*->\s*'+endpoint.format(name='public')+r'\s*\)\s*->\s*'+endpoint.format(name='destination'),message,re.I)
+    if translation:
+        for key in ENDPOINT_FIELDS:
+            if translation[key] is not None:
+                assign(key,translation[key])
+    # PPPoE interfaces identify subscribers, not the event category.
+    subscriber=re.search(r'\bin:\s*<?(pppoe-[^>\s,]+)>?',message,re.I)
+    if subscriber:
+        row['subscriber_id']=subscriber[1]
+    else:
+        user=re.search(r'\b(?:subscriber_id|username|user)\s*[=:]\s*[\"\']?([^\s,;\"\']+)',message,re.I)
+        if user: row['subscriber_id']=user[1]
+    protocol=re.search(r'\bproto(?:col)?\s*(?:[=:]\s*|\s+)([A-Za-z0-9_-]+)',message,re.I)
+    if protocol: row['protocol']=protocol[1].lower()
+    app=re.search(r'\b(?:app|application)\s*[=:]\s*([^\s,;]+)',message,re.I)
+    if app: row['application']=app[1]
+    row['parse_status']='partial' if row['field_mask'] or row['protocol'] or row['subscriber_id'] or row['application'] else 'unknown'
+    return row
 
-            if any(
-                len(pair) != 2
-                for pair in pairs
-            ):
-                raise ValueError(
-                    "Malformed NAT token"
-                )
 
-            fields = dict(pairs)
-
-            if (
-                len(fields) != len(pairs)
-                or set(fields) != NAT_KEYS
-            ):
-                raise ValueError(
-                    "Incomplete or additional NAT fields"
-                )
-
-            for key in (
-                "private_ip",
-                "public_ip",
-                "destination_ip",
-            ):
-                fields[key] = str(
-                    ipaddress.IPv4Address(
-                        fields[key]
-                    )
-                )
-
-            for key in (
-                "private_port",
-                "public_port",
-                "destination_port",
-            ):
-                value = int(
-                    fields[key]
-                )
-
-                if not 0 <= value <= 65535:
-                    raise ValueError(
-                        "Invalid port"
-                    )
-
-                fields[key] = value
-
-            protocol = (
-                fields["protocol"]
-                .strip()
-                .lower()
-            )
-
-            if protocol not in (
-                "tcp",
-                "udp",
-            ):
-                raise ValueError(
-                    "Unsupported protocol"
-                )
-
-            fields["protocol"] = protocol
-
-            return (
-                "nat_sessions",
-                {
-                    **base,
-                    **fields,
-                },
-                False,
-            )
-
-        except (
-            ValueError,
-            TypeError,
-            ipaddress.AddressValueError,
-        ):
-            pass
-
-    # --------------------------------------------------------
-    # 3. Generic event
-    # --------------------------------------------------------
-
-    category = "system"
-
-    lower = message.lower()
-
-    for key in (
-        "pppoe",
-        "dhcp",
-        "radius",
-        "ipsec",
-        "authentication",
-        "error",
-        "warning",
-    ):
-        if key in lower:
-            category = key
-            break
-
-    # An unparsed NAT-looking message is NOT allowed to
-    # silently become a PPPoE event.
-    if re.search(
-        r"\b(?:nat|snat|dnat)\b",
-        message,
-        re.IGNORECASE,
-    ):
-        category = "nat_unparsed"
-
+def normalize_syslog(raw, src_ip, src_port, received_at):
+    row=empty_record(raw,src_ip,src_port,received_at)
     try:
-        raw_message = raw.decode(
-            "utf-8",
-            errors="replace",
-        )
+        envelope=parse_syslog(raw,src_ip,src_port,received_at)
+        row['timestamp']=_normalise_received_at(envelope['device_time'])
+        translated=mikrotik_snat(raw)
+        if translated is None:
+            try:
+                translated=strict_key_value(envelope['message'])
+            except (ValueError,TypeError):
+                translated=None
+        if translated:
+            row.update(translated,field_mask=63,parse_status='parsed')
+            return row
+    except (ValueError,TypeError,UnicodeError):
+        pass
+    # Use the full original text; extracted envelope fields must not hide clues.
+    return fallback_normalize(row,row['raw_message'])
+
+
+def route_syslog(raw, src_ip, src_port, received_at):
+    try:
+        row=normalize_syslog(raw,src_ip,src_port,received_at)
+        return 'nat_sessions_v2',row,False
     except Exception:
-        raw_message = str(raw)
+        # Preserve even an unexpected parser exception. Listener exposes this
+        # counter; it is a normalization failure, not a processing drop.
+        row=empty_record(raw,src_ip,src_port,received_at)
+        row['parse_status']='error'
+        return 'nat_sessions_v2',row,True
 
-    base.update(
-        source_port=src_port,
 
-        hostname=legacy[
-            "hostname"
-        ],
-
-        facility=min(
-            legacy["facility"],
-            23,
-        ),
-
-        severity=legacy[
-            "severity"
-        ],
-
-        event_type=category,
-
-        message=message,
-
-        raw_message=raw_message,
-    )
-
-    return (
-        "events",
-        base,
-
-        legacy[
-            "process_name"
-        ] == "unknown" or category == "nat_unparsed",
-    )
+def normalize_spooled(table, old):
+    """Drain pre-upgrade spool batches into V2, preserving their stable UUIDs."""
+    stamp=datetime.fromisoformat(old['timestamp']) if isinstance(old['timestamp'],str) else old['timestamp']
+    received=datetime.fromisoformat(old['received_at']) if isinstance(old['received_at'],str) else old['received_at']
+    if table=='events':
+        raw=(old.get('raw_message') or old.get('message') or '').encode('utf-8')
+        row=route_syslog(raw,old['router_ip'],old.get('source_port',0),received)[1]
+        row['migration_source']='events_spool'
+    elif table in ('nat_sessions','nat_sessions_v2'):
+        row=dict(NAT_V2_DEFAULTS,**old)
+    else:
+        raise ValueError('Unsupported spool destination')
+    row.update(timestamp=stamp,received_at=received,record_id=uuid.UUID(str(old['record_id'])))
+    return row

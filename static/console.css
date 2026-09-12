@@ -11,3 +11,6 @@
 .detail-field.wide{grid-column:1/-1}.detail-row td{max-width:none}.nat-summary{min-width:420px;font-family:Consolas,monospace}
 .worker-list{display:grid;gap:16px}.worker-card{border:1px solid var(--border);border-radius:8px;padding:16px}.worker-card h3{margin:0 0 14px}.worker-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:14px}.worker-grid strong{display:block;font-size:16px;margin-top:4px}
 @media(max-width:900px){.detail-grid{grid-template-columns:repeat(2,minmax(140px,1fr))}}
+
+/* NAT-only main table: exactly nine fields, no raw/detail expansion. */
+#logs td{white-space:nowrap;max-width:none}#logHeader th{white-space:nowrap}

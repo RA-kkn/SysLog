@@ -17,13 +17,14 @@ class NatTests(unittest.TestCase):
     def test_variations_and_diagnostics(self):
         for text in (SAMPLE, SAMPLE.replace('new,snat', 'established,snat src-mac aa:bb:cc:dd:ee:ff,'),
                      SAMPLE.replace('connection-state:new,snat ', ''),
-                     SAMPLE.replace('TCP (ACK,RST)', 'UDP'), SAMPLE.replace(', len 52', ''),
+                     SAMPLE.replace('TCP (ACK,RST)', 'UDP'), SAMPLE.replace(', len 52', ''), SAMPLE.replace(', len 52', ', prio 7->0, len 52'),
                      '<134>Sep 12 12:00:00 router '+SAMPLE,
                      '<134>1 2026-09-12T12:00:00+05:00 router firewall - - - '+SAMPLE):
             with self.subTest(text=text):
                 table, row, failed = self.route(text)
                 self.assertEqual(table, 'nat_sessions_v2')
                 self.assertFalse(failed)
+                self.assertEqual(row['parse_status'], 'parsed')
                 self.assertEqual(set(row), set(NAT_V2_COLUMNS))
                 self.assertEqual(row['private_ip'], '100.68.180.201')
                 self.assertEqual(row['public_ip'], '103.125.177.119')
@@ -39,32 +40,31 @@ class NatTests(unittest.TestCase):
                      SAMPLE.replace('100.68.180.201:60734->103.', '100.68.180.202:60734->103.'),
                      SAMPLE.replace('new,snat','new,snat,dnat'), SAMPLE.replace('TCP','ICMP')):
             table,row,failed=self.route(text)
-            self.assertEqual(table,'events')
+            self.assertEqual(table,'nat_sessions_v2')
             self.assertEqual(row['raw_message'],text)
-            self.assertEqual(row['event_type'],'nat_unparsed')
-            self.assertTrue(failed)
+            self.assertIn(row['parse_status'],('partial','parsed'))
+            self.assertFalse(failed)
 
     def test_packets_are_not_silently_deduplicated(self):
         first,second=self.route(SAMPLE)[1],self.route(SAMPLE)[1]
         self.assertNotEqual(first['record_id'],second['record_id'])
 
-    def test_total_has_no_cursor_and_all_includes_events(self):
+    def test_total_has_no_cursor_and_only_nat(self):
         import search
         captured=[]
         def query(sql,**kw):
             captured.append((sql,kw))
-            if sql.startswith('SELECT sum(matches)'):
+            if sql.startswith('SELECT count()'):
                 return SimpleNamespace(result_rows=[(7001,)],column_names=['total'])
             return SimpleNamespace(result_rows=[],column_names=[])
         with patch('search.get_client',return_value=SimpleNamespace(query=query)):
-            result=search.query_logs(kind='all',keyword='pppoe-S-jameel,443')
+            result=search.query_logs(kind='nat_sessions_v2',keyword='pppoe-S-jameel,443')
         self.assertEqual(result['total_count'],7001)
         self.assertEqual(result['count'],0)
         for sql,kw in captured:
-            self.assertIn('FROM events',sql)
+            self.assertNotIn('FROM events',sql)
             self.assertIn('FROM nat_sessions_v2',sql)
             self.assertEqual(kw['parameters']['term1'],443)
-            self.assertEqual(kw['parameters']['event_term1'],'443')
         self.assertNotIn('LIMIT',captured[0][0])
 
 

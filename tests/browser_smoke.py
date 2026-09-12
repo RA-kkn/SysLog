@@ -24,9 +24,11 @@ def main():
         search_calls=[]
         def fake_search(**kwargs):
             search_calls.append(kwargs)
-            event=dict(timestamp='2026-09-11T01:00:00Z',router_ip='192.0.2.1',kind='events',event_type='system',message='<img src=x onerror=alert(1)>')
-            nat=dict(timestamp='2026-09-11T01:00:00Z',received_at='2026-09-11T01:00:01Z',router_ip='192.0.2.2',kind='nat_sessions_v2',private_ip='100.68.180.201',private_port=60734,public_ip='103.125.177.119',public_port=60734,destination_ip='57.144.149.32',destination_port=443,protocol='tcp',subscriber_id='pppoe-S-jameel',tcp_flags='ACK,RST',source_port=12345)
-            rows=[nat] if kwargs.get('kind')=='nat_sessions' else [event] if kwargs.get('kind')=='events' else [nat,event]
+            from nat_view import DISPLAY_FIELDS
+            nat=dict(timestamp='2026-09-11T01:00:00Z',private_ip='100.68.180.201',private_port=60734,public_ip='103.125.177.119',public_port=60734,destination_ip='57.144.149.32',destination_port=443,protocol='TCP',subscriber_id='pppoe-S-jameel')
+            unknown=dict.fromkeys(DISPLAY_FIELDS)
+            unknown.update(timestamp='2026-09-11T01:00:00Z',subscriber_id='<img src=x onerror=alert(1)>')
+            rows=[nat,unknown]
             return dict(results=rows,count=len(rows),total_count=501,next_cursor=None if kwargs.get('cursor') else 'page2',start='2026-09-11T00:00:00Z',end='2026-09-12T00:00:00Z')
         search_api.query_logs=fake_search
         search_api.report=lambda: dict(listener='UP',clickhouse='UP',api='UP',sqlite='UP',cpu_percent=3,ram={'used':1000000},budget_bytes=4e12,retention_target_days=365,workers=[dict(pid=123,up=True,received=200,queued=200,nat_parsed=150,events_parsed=50,inserted=200,denied=0,queue_size=0,queue_capacity=50000,spool_bytes=0,parse_failures=0,write_failures=0,dropped_queue=0,dropped_spool=0)],storage=dict(current_eps=7.83,observed_rows=200,database_disk_bytes=149830,compression_ratio=11.44,measured_net_disk_growth_per_day=28000000,estimated_30_day_bytes=857880000,estimated_365_day_bytes=10440000000,disks=[{'free_bytes':1e12}],estimated_days_on_free_disk=1000,budget_percent=.26,projection_confidence='LOW',observed_seconds=420,disk_growth_observation_seconds=420,tables=[]))
@@ -60,10 +62,13 @@ def main():
                 expect(page.locator('#previous')).to_be_enabled()
                 page.locator('#previous').click()
                 expect(page.locator('#previous')).to_be_disabled()
-                page.locator('#logs button').first.click()
-                expect(page.locator('.detail-row').first).to_be_visible()
-                expect(page.locator('.detail-grid').first).to_contain_text('ACK,RST')
-                page.screenshot(path=str(artifacts/'search-details.png'))
+                from nat_view import DISPLAY_COLUMNS
+                assert page.locator('#logHeader th').all_text_contents()==[label for _,label in DISPLAY_COLUMNS]
+                assert page.locator('#kind option').all_text_contents()==['NAT']
+                assert page.locator('#logs button').count()==0
+                assert page.locator('#logs tr').last.locator('td').count()==9
+                assert page.locator('#logs tr').last.locator('td').first.inner_text()==''
+                page.screenshot(path=str(artifacts/'nat-search.png'))
                 page.locator('[data-page=devices]').click()
                 page.fill('#manualIP','192.0.2.1');page.locator('#approveForm button').click()
                 page.locator('#devices').get_by_text('192.0.2.1',exact=True).wait_for()
@@ -81,9 +86,14 @@ def main():
                 with page.expect_download() as download:
                     page.locator('#export').click()
                 assert download.value.suggested_filename=='syslog-export.csv'
-                page.select_option('#kind','nat_sessions');page.locator('#searchForm button').click()
-                expect(page.locator('#logHeader')).to_contain_text('PRIVATE PORT')
-                expect(page.locator('#logs > tr:not(.detail-row)')).to_have_count(1)
+                import csv
+                exported=list(csv.reader(Path(download.value.path()).read_text(encoding='utf-8').splitlines()))
+                assert exported[0]==[label for _,label in DISPLAY_COLUMNS]
+                assert exported[1][7]=='2026-09-11 06:00:00'
+                assert len(exported[1])==9
+                page.select_option('#kind','nat_sessions_v2');page.locator('#searchForm button').click()
+                expect(page.locator('#logHeader')).to_contain_text('Private Port')
+                expect(page.locator('#logs > tr:not(.detail-row)')).to_have_count(2)
                 page.locator('[data-page=system]').click()
                 expect(page.locator('#compressionStats')).to_contain_text('11.44x')
                 expect(page.locator('.worker-card')).to_have_count(1)
@@ -104,7 +114,7 @@ def main():
                 assert not page.locator('#export').is_visible()
                 assert not errors,errors
                 browser.close()
-            print('PASS: Edge auto-load/reload/navigation, totals, next/previous, NAT columns, details grid, Karachi time, health cards, login/RBAC/devices/CSV/branding/theme layout. Search/health responses stubbed.')
+            print('PASS: Edge auto-load/reload/navigation, totals, next/previous, exact nine NAT columns, no details/raw exposure, Karachi time, health cards, login/RBAC/devices/CSV/branding/theme layout. Search/health responses stubbed.')
         finally:
             server.should_exit=True;thread.join(timeout=10)
 
