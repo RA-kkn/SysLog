@@ -5,9 +5,6 @@ import ipaddress
 
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
-
-load_dotenv()
 
 
 # ============================================================
@@ -487,10 +484,10 @@ EVENT_COLUMNS = [
 ]
 
 
-# nat_sessions_v2 currently uses the same 12 persisted columns as
-# nat_sessions. The parser may return extra diagnostic fields, but the
-# listener intentionally inserts only the columns listed here.
-NAT_V2_COLUMNS = NAT_COLUMNS
+# Persist all diagnostic fields. Old spool rows receive explicit defaults.
+NAT_V2_DEFAULTS = dict(source_port=0, input_interface='', output_interface='',
+    connection_state='', tcp_flags='', packet_length=0, syslog_prefix='', record_type='')
+NAT_V2_COLUMNS = NAT_COLUMNS + list(NAT_V2_DEFAULTS)
 
 
 # ============================================================
@@ -514,11 +511,7 @@ MIKROTIK_SNAT = re.compile(
     r"(?P<output>[^\s,]+)"
     r",\s*"
 
-    r"(?:connection-state:"
-    r"(?P<state>[\w-]+)"
-    r",\s*)?"
-
-    r"snat\s+proto\s+"
+    r"(?P<metadata>.*?)\bproto\s+"
     r"(?P<protocol>TCP|UDP)"
 
     r"(?:\s+\("
@@ -618,6 +611,14 @@ def mikrotik_snat(message):
     if not match:
         return None
 
+    metadata = match['metadata']
+    if re.search(r'\bdnat\b', metadata, re.IGNORECASE):
+        return None  # Combined SNAT/DNAT needs a separate, lossless mapping.
+    state_match = re.search(r'\bconnection-state:([\w-]+)', metadata, re.IGNORECASE)
+    state = state_match[1] if state_match else ''
+    # Keep source MAC, unknown diagnostic attributes and envelope in the small
+    # prefix field rather than dropping information or duplicating the NAT body.
+    remainder = re.sub(r'\bconnection-state:[\w-]+,?\s*|\bsnat\b', '', metadata, flags=re.IGNORECASE).strip(' ,')
     private = _endpoint(
         match,
         "private",
@@ -751,7 +752,7 @@ def mikrotik_snat(message):
         ),
 
         "connection_state": (
-            match["state"] or ""
+            state
         ),
 
         "tcp_flags": flags,
@@ -759,7 +760,7 @@ def mikrotik_snat(message):
         "packet_length": packet_length,
 
         "syslog_prefix": (
-            match["prefix"] or ""
+            (match["prefix"] or "") + remainder
         ).strip(),
 
         "record_type": "packet_snat",
@@ -848,12 +849,11 @@ def route_syslog(
     #
     # IMPORTANT FIX:
     #
-    # Parse the extracted syslog MESSAGE rather than the raw
-    # syslog envelope.
+    # Match the complete packet so its envelope is retained in syslog_prefix.
     #
     try:
         translated = mikrotik_snat(
-            message
+            raw
         )
 
         if translated:
@@ -1042,5 +1042,5 @@ def route_syslog(
 
         legacy[
             "process_name"
-        ] == "unknown",
+        ] == "unknown" or category == "nat_unparsed",
     )

@@ -14,9 +14,17 @@ os.environ['DATA_DIR']=str(Path(TEMP.name)/'data')
 os.environ['COOKIE_SECURE']='false'
 from fastapi.testclient import TestClient
 from PIL import Image
-import auth
+# Set module-level configuration explicitly even if another test imported it.
+# Never allow this suite's cleanup statements to target the workspace DB.
 import config
+config.DB_PATH=os.environ['CONFIG_DB_PATH']
+config.DATA_DIR=Path(os.environ['DATA_DIR'])
+config.DATA_DIR.mkdir(parents=True,exist_ok=True)
+config.COOKIE_SECURE=False
 import device_store
+device_store.DB_PATH=config.DB_PATH
+device_store.init_db()
+import auth
 import search
 import search_api
 from parser import route_syslog
@@ -27,6 +35,7 @@ import time
 
 class PlatformTests(unittest.TestCase):
     def setUp(self):
+        self.assertEqual(Path(device_store.DB_PATH).parent,Path(TEMP.name))
         with device_store._conn() as c:
             for table in ('users','sessions','login_limits','devices'):
                 c.execute(f'DELETE FROM {table}')
@@ -130,7 +139,7 @@ class PlatformTests(unittest.TestCase):
 
     def capture(self,sql,kw):
         self.sql,self.kw=sql,kw
-        return SimpleNamespace(column_names=[],result_rows=[])
+        return SimpleNamespace(column_names=['total'],result_rows=[(0,)]) if 'SELECT sum(matches)' in sql else SimpleNamespace(column_names=[],result_rows=[])
 
     def test_cursor_equal_timestamps(self):
         stamp=datetime.now(timezone.utc)
@@ -140,7 +149,7 @@ class PlatformTests(unittest.TestCase):
             client.return_value.query.return_value=result
             first=search.query_logs(kind='events',limit=100)
             self.assertTrue(first['next_cursor'])
-            client.return_value.query.return_value=SimpleNamespace(column_names=[],result_rows=[])
+            client.return_value.query.side_effect=lambda sql,**kw: SimpleNamespace(column_names=['total'],result_rows=[(101,)]) if 'SELECT sum(matches)' in sql else SimpleNamespace(column_names=[],result_rows=[])
             search.query_logs(kind='events',limit=100,cursor=first['next_cursor'])
             sql=client.return_value.query.call_args.args[0]
             self.assertIn('(timestamp, record_id,',sql)

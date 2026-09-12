@@ -15,6 +15,10 @@ def main():
     migration = sub.add_parser('prepare-nat-v2'); migration.add_argument('schema_backup')
     ttl = sub.add_parser('retention-plan'); ttl.add_argument('--days',type=int,default=config.RETENTION_DAYS)
     sub.add_parser('storage')
+    compression = sub.add_parser('compression-plan')
+    compression.add_argument('--apply',action='store_true')
+    compression.add_argument('--schema-backup')
+    tz = sub.add_parser('set-display-timezone'); tz.add_argument('timezone')
     backup = sub.add_parser('backup-config'); backup.add_argument('destination')
     args = parser.parse_args()
     if args.command == 'create-admin':
@@ -36,20 +40,40 @@ def main():
         import clickhouse_connect
         client = clickhouse_connect.get_client(host=config.CLICKHOUSE_HOST,port=config.CLICKHOUSE_PORT,
             username=config.CLICKHOUSE_USER,password=config.CLICKHOUSE_PASSWORD,secure=config.CLICKHOUSE_SECURE)
-        sql = (config.ROOT/'schema_structured.sql').read_text().replace('syslog_db',config.CLICKHOUSE_DB)
+        sql = (config.ROOT/'schema_structured.sql').read_text(encoding='utf-8').replace('syslog_db',config.CLICKHOUSE_DB)
         sql = sql.replace('INTERVAL 365 DAY',f'INTERVAL {config.RETENTION_DAYS} DAY')
         sql = '\n'.join(line for line in sql.splitlines() if not line.lstrip().startswith('--'))
         for statement in sql.split(';'):
             if statement.strip():
                 client.command(statement)
+        from schema_audit import validate
+        validate(client)
         print('Additive schema applied. Existing tables/TTLs were not modified.')
+    elif args.command == 'compression-plan':
+        from compression import plan, apply
+        if args.apply:
+            if not args.schema_backup:
+                parser.error('--apply requires --schema-backup (a new destination)')
+            apply(args.schema_backup)
+            print('NAT ZSTD(9) codecs applied and verified. Schema backed up; no forced data rewrite.')
+        else:
+            print('-- REVIEW ONLY. No database command executed.')
+            print('-- CODEC only; no type, TTL, sort key or data deletion changes.')
+            print('-- Existing parts are not forcibly rewritten. Monitor ingestion and merge CPU.')
+            print(plan())
     elif args.command == 'retention-plan':
         if not 1 <= args.days <= 3650:
             parser.error('Days must be 1..3650')
         print('-- REVIEW ONLY: applying this SQL allows deletion of records older than the new TTL.')
         print('-- Back up and confirm the retention requirement first. No SQL has been executed.')
-        for table in ('nat_sessions','events'):
+        for table in ('nat_sessions','nat_sessions_v2','events'):
             print(f'ALTER TABLE {config.CLICKHOUSE_DB}.{table} MODIFY TTL toDateTime(timestamp) + INTERVAL {args.days} DAY DELETE;')
+    elif args.command == 'set-display-timezone':
+        from zoneinfo import ZoneInfo
+        import device_store
+        ZoneInfo(args.timezone)
+        device_store.set_setting('display_timezone', args.timezone)
+        print('Display timezone saved; UTC database timestamps unchanged.')
     elif args.command == 'storage':
         from monitoring import report
         print(json.dumps(report(),indent=2,default=str))

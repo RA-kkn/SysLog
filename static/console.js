@@ -152,7 +152,7 @@ function date(value) {
     }
 
     const parts = new Intl.DateTimeFormat('en-GB', {
-        timeZone: branding.display_timezone || 'UTC',
+        timeZone: branding.display_timezone || 'Asia/Karachi',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -392,191 +392,55 @@ function searchParams() {
  *
  * Do NOT dump a successful NAT parse into one giant raw-message column.
  */
+function detailGrid(row) {
+    const grid = document.createElement('div');
+    grid.className = 'detail-grid';
+    const nat = String(row.kind).startsWith('nat_sessions');
+    const fields = nat ? ['timestamp','received_at','router_ip','subscriber_id','private_ip','private_port','public_ip','public_port','destination_ip','destination_port','protocol','input_interface','output_interface','connection_state','tcp_flags','packet_length','source_port','record_type','record_id','syslog_prefix'] : ['timestamp','received_at','router_ip','hostname','event_type','severity','source_port','record_id','message'];
+    for (const key of fields) {
+        let value = row[key];
+        if (key === 'input_interface' && !value && row.subscriber_id) value = row.subscriber_id;
+        if (value === '' || value == null) continue;
+        const item = document.createElement('div'), label = document.createElement('span'), content = document.createElement('strong');
+        item.className = 'detail-field';
+        if (key === 'message' || key === 'syslog_prefix') item.classList.add('wide');
+        label.textContent = key.replaceAll('_', ' ');
+        content.textContent = key === 'timestamp' || key === 'received_at' ? date(value) : String(value);
+        item.append(label, content); grid.append(item);
+    }
+    return grid;
+}
+
 function renderLogs(rows, kind) {
-    const natKeys = [
-        'timestamp',
-        'private_ip',
-        'private_port',
-        'public_ip',
-        'public_port',
-        'destination_ip',
-        'destination_port',
-        'protocol',
-        'subscriber_id',
-        'router_ip'
-    ];
-
-    let keys;
-
-    if (kind === 'nat_sessions') {
-        keys = natKeys;
-    } else if (kind === 'events' || kind === 'legacy') {
-        keys = [
-            'timestamp',
-            'router_ip',
-            'event_type',
-            'hostname',
-            'severity',
-            'message'
-        ];
-    } else {
-        /*
-         * Compact All Logs view.
-         * NAT details remain available through Details.
-         */
-        keys = [
-            'timestamp',
-            'router_ip',
-            'kind',
-            'summary',
-            'details'
-        ];
-    }
-
-    const head = $('logHeader');
-    head.replaceChildren();
-
+    const keys = kind === 'nat_sessions'
+        ? ['timestamp','private_ip','private_port','public_ip','public_port','destination_ip','destination_port','protocol','subscriber_id','router_ip','details']
+        : kind === 'events' || kind === 'legacy'
+        ? ['timestamp','router_ip','event_type','hostname','severity','message','details']
+        : ['timestamp','router_ip','kind','summary','details'];
+    $('logHeader').replaceChildren(); $('logs').replaceChildren();
     for (const key of keys) {
-        const th = document.createElement('th');
-
-        const labels = {
-            timestamp: 'TIMESTAMP',
-            private_ip: 'PRIVATE IP',
-            private_port: 'PRIVATE PORT',
-            public_ip: 'PUBLIC IP',
-            public_port: 'PUBLIC PORT',
-            destination_ip: 'DEST IP',
-            destination_port: 'DEST PORT',
-            protocol: 'PROTOCOL',
-            subscriber_id: 'SUBSCRIBER ID',
-            router_ip: 'ROUTER',
-            event_type: 'EVENT TYPE',
-            hostname: 'HOSTNAME',
-            severity: 'SEVERITY',
-            message: 'MESSAGE',
-            kind: 'TYPE',
-            summary: 'SUMMARY',
-            details: 'DETAILS'
-        };
-
-        th.textContent =
-            labels[key] || key.replaceAll('_', ' ').toUpperCase();
-
-        head.append(th);
+        const th = document.createElement('th'); th.textContent = key.replaceAll('_',' ').toUpperCase(); $('logHeader').append(th);
     }
-
-    $('logs').replaceChildren();
-
-    for (const row of rows || []) {
+    for (const row of rows) {
         const tr = document.createElement('tr');
-
-        const nat =
-            String(row.kind || '').startsWith('nat_sessions') ||
-            (
-                row.private_ip &&
-                row.public_ip &&
-                row.destination_ip
-            );
-
+        const nat = String(row.kind).startsWith('nat_sessions');
+        const expanded = document.createElement('tr'); expanded.hidden = true; expanded.className = 'detail-row';
+        const expandedCell = cell(expanded, ''); expandedCell.colSpan = keys.length;
+        expandedCell.append(detailGrid(row));
         for (const key of keys) {
             if (key === 'details') {
-                const td = cell(tr, '');
-
-                const details = document.createElement('details');
-                const summary = document.createElement('summary');
-
-                summary.textContent = 'Details';
-
-                details.append(summary);
-
-                const dl = document.createElement('dl');
-
-                for (const [name, value] of Object.entries(row)) {
-                    if (
-                        value === '' ||
-                        value === null ||
-                        value === undefined
-                    ) {
-                        continue;
-                    }
-
-                    const dt = document.createElement('dt');
-                    const dd = document.createElement('dd');
-
-                    dt.textContent = name;
-
-                    dd.textContent =
-                        typeof value === 'object'
-                            ? JSON.stringify(value)
-                            : String(value);
-
-                    dl.append(dt, dd);
-                }
-
-                details.append(dl);
-                td.append(details);
-            }
-
-            else if (key === 'summary') {
-                if (nat) {
-                    const subscriber =
-                        row.subscriber_id || 'NAT';
-
-                    const privateEndpoint =
-                        `${row.private_ip || '—'}:${row.private_port ?? '—'}`;
-
-                    const publicEndpoint =
-                        `${row.public_ip || '—'}:${row.public_port ?? '—'}`;
-
-                    const destination =
-                        `${row.destination_ip || '—'}:${row.destination_port ?? '—'}`;
-
-                    const protocol =
-                        String(row.protocol || '').toUpperCase();
-
-                    cell(
-                        tr,
-                        `${subscriber} · ${privateEndpoint} → ${publicEndpoint} → ${destination} ${protocol}`
-                    );
-                } else {
-                    cell(tr, row.message || '—');
-                }
-            }
-
-            else if (key === 'timestamp') {
-                cell(tr, date(row[key]), 'endpoint');
-            }
-
-            else if (key === 'kind') {
-                cell(
-                    tr,
-                    nat
-                        ? 'NAT session'
-                        : row.event_type || row.kind || 'Event'
-                );
-            }
-
-            else if (key === 'protocol') {
-                cell(
-                    tr,
-                    String(row[key] || '').toUpperCase()
-                );
-            }
-
-            else {
-                const endpoint =
-                    key.includes('ip') ||
-                    key.includes('port');
-
-                cell(
-                    tr,
-                    row[key],
-                    endpoint ? 'endpoint' : null
-                );
+                const td = cell(tr, ''), toggle = document.createElement('button');
+                toggle.className = 'secondary'; toggle.textContent = 'Details'; toggle.setAttribute('aria-expanded','false');
+                toggle.onclick = () => {expanded.hidden = !expanded.hidden; toggle.setAttribute('aria-expanded',String(!expanded.hidden)); toggle.textContent = expanded.hidden ? 'Details' : 'Close details';};
+                td.append(toggle);
+            } else if (key === 'summary') {
+                cell(tr, nat ? `${row.subscriber_id || 'NAT'} | ${row.private_ip}:${row.private_port} \u2192 ${row.public_ip}:${row.public_port} \u2192 ${row.destination_ip}:${row.destination_port} | ${String(row.protocol).toUpperCase()}` : row.message, nat ? 'nat-summary' : null);
+            } else {
+                const value = key === 'timestamp' ? date(row[key]) : key === 'kind' ? (nat ? 'NAT translation' : row.event_type || 'Event') : key === 'protocol' ? String(row[key]).toUpperCase() : row[key];
+                cell(tr, value, key.includes('ip') || key.includes('port') || key === 'timestamp' ? 'endpoint' : null);
             }
         }
-
-        $('logs').append(tr);
+        $('logs').append(tr, expanded);
     }
 }
 
@@ -636,7 +500,7 @@ async function search(direction = 'fresh') {
 
         if (data.count) {
             $('searchStatus').textContent =
-                `${data.count} records · ` +
+                `${num(data.count)} shown of ${num(data.total_count)} matching records · ` +
                 `${num(
                     data.query_ms ??
                     performance.now() - started
@@ -861,200 +725,30 @@ $('approveForm').onsubmit =
 
 async function system() {
     const d = await api('/api/system');
-
-    stats('healthStats', [
-        ['Listener', d.listener],
-        ['ClickHouse', d.clickhouse],
-        ['API / SQLite', d.api + ' / ' + d.sqlite],
-        ['CPU', num(d.cpu_percent) + '%'],
-        ['RAM used', bytes(d.ram.used)]
-    ]);
-
+    stats('healthStats', [['Listener',d.listener],['ClickHouse',d.clickhouse],['API / SQLite',d.api+' / '+d.sqlite],['CPU',num(d.cpu_percent)+'%'],['RAM',bytes(d.ram.used)]]);
     const s = d.storage;
-
+    for (const id of ['ingestionStats','compressionStats','storageStats','tables','workers']) $(id).replaceChildren();
     if (!s) {
-        stats('storageStats', []);
-
-        $('budgetText').textContent =
-            d.clickhouse_error;
-
-        $('tables').replaceChildren();
-        $('budget').value = 0;
+        $('budgetText').textContent = d.clickhouse_error || 'Storage unavailable';
+        $('storageMethod').textContent = ''; $('budget').value = 0;
     } else {
-        stats('ingestionStats', [
-            [
-                'Current insert EPS (complete minute)',
-                num(s.current_eps)
-            ],
-            [
-                '1h average EPS',
-                num(s.eps_1h)
-            ],
-            [
-                '24h average EPS',
-                num(s.eps_24h)
-            ],
-            [
-                '7d average EPS',
-                num(s.eps_7d)
-            ],
-            [
-                'Observed rows',
-                num(s.observed_rows)
-            ],
-            [
-                'Continuous observation (hours)',
-                num(s.observed_seconds / 3600)
-            ]
-        ]);
-
-        stats('compressionStats', [
-            [
-                'Database disk size',
-                bytes(s.database_disk_bytes)
-            ],
-            [
-                'Structured compressed size',
-                bytes(s.database_compressed_bytes)
-            ],
-            [
-                'Raw bytes / row',
-                num(s.uncompressed_bytes_per_row)
-            ],
-            [
-                'Compressed bytes / row',
-                num(s.compressed_bytes_per_row)
-            ],
-            [
-                'Compression ratio',
-                num(s.compression_ratio) + '×'
-            ],
-            [
-                'Measured net disk growth / day',
-                s.measured_net_disk_growth_per_day == null
-                    ? 'Unavailable'
-                    : bytes(
-                        s.measured_net_disk_growth_per_day
-                    ) + '/day'
-            ]
-        ]);
-
-        stats('storageStats', [
-            [
-                'Projection confidence',
-                s.projection_confidence
-            ],
-            [
-                'Projected daily compressed',
-                bytes(
-                    s.estimated_daily_compressed_bytes
-                )
-            ],
-            [
-                'Projected 30 days',
-                bytes(s.estimated_30_day_bytes)
-            ],
-            [
-                'Projected 365 days',
-                bytes(s.estimated_365_day_bytes)
-            ],
-            [
-                'Daily budget',
-                bytes(s.daily_budget_bytes)
-            ],
-            [
-                'Annual safety margin',
-                s.annual_safety_margin_bytes == null
-                    ? 'Unavailable'
-                    : (
-                        s.annual_safety_margin_bytes < 0
-                            ? '-'
-                            : ''
-                    ) +
-                    bytes(
-                        Math.abs(
-                            s.annual_safety_margin_bytes
-                        )
-                    )
-            ],
-            [
-                'ClickHouse disk free',
-                bytes(
-                    s.disks.reduce(
-                        (n, x) =>
-                            n + x.free_bytes,
-                        0
-                    )
-                )
-            ],
-            [
-                'Days on free disk (projection)',
-                num(
-                    s.estimated_days_on_free_disk
-                )
-            ]
-        ]);
-
-        $('budget').value =
-            s.budget_percent || 0;
-
-        $('budgetText').textContent =
-            num(s.budget_percent) +
-            '% of ' +
-            bytes(d.budget_bytes) +
-            ' annual budget · Retention target: ' +
-            d.retention_target_days +
-            ' days' +
-            (
-                s.budget_percent > 100
-                    ? ' · PROJECTED OVER BUDGET'
-                    : ''
-            );
-
-        $('storageMethod').textContent =
-            s.method +
-            ' Observation: ' +
-            num(s.observed_seconds / 3600) +
-            ' hours.';
-
-        table(
-            'tables',
-            s.tables,
-            [
-                'table',
-                'rows',
-                'uncompressed_bytes',
-                'compressed_bytes',
-                'disk_bytes'
-            ]
-        );
+        stats('ingestionStats',[['Insert EPS',num(s.current_eps)],['Observed rows',num(s.observed_rows)]]);
+        stats('compressionStats',[['DB size',bytes(s.database_disk_bytes)],['Compression ratio',s.compression_ratio == null ? 'Unavailable' : num(s.compression_ratio)+'x'],['Daily net growth',s.measured_net_disk_growth_per_day == null ? 'Unavailable' : (s.measured_net_disk_growth_per_day<0?'-':'')+bytes(Math.abs(s.measured_net_disk_growth_per_day))+'/day']]);
+        stats('storageStats',[['30-day estimate',bytes(s.estimated_30_day_bytes)],['365-day estimate',bytes(s.estimated_365_day_bytes)],['Free disk',bytes(s.disks.reduce((n,x)=>n+x.free_bytes,0))],['Estimated days remaining',num(s.estimated_days_on_free_disk)]]);
+        $('budget').value = s.budget_percent || 0;
+        $('budgetText').textContent = `${num(s.budget_percent)}% of ${bytes(d.budget_bytes)} annual budget | Retention: ${d.retention_target_days} days`;
+        $('storageMethod').textContent = `Forecast confidence: ${s.projection_confidence}. Continuous history: ${num(s.observed_seconds/3600)} hours. EPS uses complete minutes; estimates use actual stored bytes per row. Daily growth is net disk change normalized over ${num(s.disk_growth_observation_seconds/3600)} hours.`;
+        table('tables',s.tables.map(t=>({table:t.table,rows:num(t.rows),disk:bytes(t.disk_bytes),compressed:bytes(t.compressed_bytes),ratio:t.compressed_bytes?num(t.uncompressed_bytes/t.compressed_bytes)+'x':'Unavailable'})),['table','rows','disk','compressed','ratio']);
     }
-
-    table(
-        'workers',
-        d.workers,
-        [
-            'pid',
-            'up',
-            'received',
-            'queued',
-            'parsed',
-            'nat_parsed',
-            'events_parsed',
-            'inserted',
-            'denied',
-            'parse_failures',
-            'write_failures',
-            'queue_size',
-            'queue_capacity',
-            'dropped_processing',
-            'statistics_failures',
-            'dropped_queue',
-            'dropped_spool',
-            'spool_bytes',
-            'insert_latency_ms'
-        ]
-    );
+    for (const w of d.workers) {
+        const card=document.createElement('section'); card.className='worker-card';
+        const title=document.createElement('h3'); title.textContent=`Worker ${w.pid} - ${w.up?'Running':'Offline'}`; card.append(title);
+        const grid=document.createElement('div'); grid.className='worker-grid';
+        const entries=[['Received',num(w.received)],['Queued',num(w.queued)],['NAT parsed',num(w.nat_parsed)],['Events parsed',num(w.events_parsed)],['Inserted',num(w.inserted)],['Unauthorized',num(w.denied)],['Queue',`${num(w.queue_size)} / ${num(w.queue_capacity)}`],['Spool',bytes(w.spool_bytes)],['Parse failures',num(w.parse_failures)],['Write failures',num(w.write_failures)],['Queue drops',num(w.dropped_queue)],['Spool drops',num(w.dropped_spool)],['Processing drops',num(w.dropped_processing??0)],['Statistics failures',num(w.statistics_failures??0)]];
+        for(const [name,value] of entries){const item=document.createElement('div'),label=document.createElement('span'),val=document.createElement('strong');label.textContent=name;val.textContent=value;item.append(label,val);grid.append(item)}
+        card.append(grid);$('workers').append(card);
+    }
+    if (!d.workers.length) $('workers').textContent='No listener heartbeat available.';
 }
 
 $('refreshSystem').onclick =

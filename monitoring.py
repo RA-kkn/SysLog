@@ -96,7 +96,7 @@ def report():
             budget_percent=daily*365/config.STORAGE_BUDGET_BYTES*100 if daily is not None else None,
             estimated_days_on_free_disk=free/daily if daily else None,
             disks=[dict(zip(('name','free_bytes','total_bytes'),d)) for d in disks],
-            method='Acknowledged inserts during contiguous covered complete minutes (up to 7 days, 1?2 minute delay), multiplied by active structured-table bytes per row. Projection, not measured physical disk growth. History starts with this version; gaps reset confidence. Historical bytes/row reflect the stored traffic mix, not just the new parser. Excludes legacy ingest, backups, replicas and merge headroom.'))
+            method='Acknowledged inserts during contiguous covered complete minutes (up to 7 days, 1-2 minute delay), multiplied by active structured-table bytes per row. Projection, not measured physical disk growth. History starts with this version; gaps reset confidence. Historical bytes/row reflect the stored traffic mix, not just the new parser. Excludes legacy ingest, backups, replicas and merge headroom.'))
     except Exception:
         result['clickhouse_error'] = 'Storage query unavailable; inspect API logs and database permissions.'
     return result

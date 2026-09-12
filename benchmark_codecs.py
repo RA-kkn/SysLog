@@ -1,7 +1,8 @@
-﻿"""Bounded, opt-in synthetic MikroTik benchmark; isolated tables retained for review."""
+"""Bounded, opt-in synthetic MikroTik benchmark; isolated tables retained for review."""
 import argparse
 import json
 import random
+import re
 import statistics
 import time
 import uuid
@@ -52,7 +53,7 @@ def main():
         'observed_production_eps':None,'production_observation_seconds':0,'projection_confidence':'LOW','results':[]}
     for table,source,codec,rows,columns in [('before_events','events','ZSTD(1)',event_rows,EVENT_COLUMNS)]+[(f'nat_zstd{level}','nat_sessions_v2',f'ZSTD({level})',nat_rows,NAT_V2_COLUMNS) for level in (1,3,6,9)]:
         base=schema.split(f'CREATE TABLE IF NOT EXISTS syslog_db.{source}\n',1)[1].split(';',1)[0]
-        client.command(f'CREATE TABLE {database}.{table}\n'+base.replace('ZSTD(1)',codec))
+        client.command(f'CREATE TABLE {database}.{table}\n'+re.sub(r'ZSTD\(\d+\)',codec,base))
         tag=f'{database}.{table}'
         started=time.perf_counter();cpu=time.process_time()
         for offset in range(0,args.rows,2000):

@@ -17,9 +17,9 @@ def utc(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, cursor=None,
-               port=None, severity=None, hostname='', event_type=''):
+               port=None, severity=None, hostname='', event_type='', include_total=True):
     query_started = time.perf_counter()
-    if kind not in ('all', 'nat_sessions', 'events', 'legacy') or limit not in LIMITS:
+    if kind not in ('all', 'nat_sessions', 'nat_sessions_v2', 'events', 'legacy') or limit not in LIMITS:
         raise HTTPException(422, 'Invalid category or row limit')
     fingerprint = hashlib.sha256(json.dumps([kind,keyword,ip,port,severity,hostname,event_type]).encode()).hexdigest()
     position = None
@@ -58,10 +58,12 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
         if event_type:
             where.append('process_name={event_type:String}');params['event_type']=event_type
         result=get_client().query("SELECT received_at AS timestamp,received_at,toString(device_ip) AS router_ip, 'legacy' AS kind, process_name AS event_type, message FROM syslogs WHERE "+' AND '.join(where)+' ORDER BY received_at DESC LIMIT {limit:UInt32}',parameters=params,settings={'max_execution_time':30,'max_memory_usage':1_000_000_000})
+        total = get_client().query('SELECT count() FROM syslogs WHERE '+ ' AND '.join(where), parameters=params, settings={'max_execution_time':30,'max_memory_usage':1_000_000_000}).result_rows[0][0] if include_total else None
         rows=[dict(zip(result.column_names,row)) for row in result.result_rows]
-        return dict(results=rows[:limit],count=min(len(rows),limit),next_cursor=None,start=start.isoformat(),end=end.isoformat(),
+        return dict(total_count=total,query_ms=round((time.perf_counter()-query_started)*1000,2),results=rows[:limit],count=min(len(rows),limit),next_cursor=None,start=start.isoformat(),end=end.isoformat(),
                     truncated=len(rows)>limit,notice='Legacy table: bounded results only; narrow time range for more records. Existing TTL is unchanged.')
     subqueries = []
+    count_queries = []
     for table in (('nat_sessions', 'nat_sessions_v2', 'events') if kind == 'all' else ('nat_sessions', 'nat_sessions_v2') if kind == 'nat_sessions' else (kind,)):
         nat = table.startswith('nat_sessions')
         where = ['timestamp >= {start:DateTime64(3)}', 'timestamp < {end:DateTime64(3)}',
@@ -86,7 +88,7 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
         if len(terms) > 10 or len(keyword) > 512:
             raise HTTPException(422, 'At most 10 search terms / 512 characters')
         for i, term in enumerate(terms):
-            key = f'term{i}'
+            key = f'term{i}' if nat else f'event_term{i}'
             try:
                 address = str(ipaddress.IPv4Address(term))
             except ValueError:
@@ -106,6 +108,7 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
                 expression = "concat(subscriber_id, ' ', protocol)" if nat else 'message'
                 where.append(f'positionCaseInsensitiveUTF8({expression}, {{{key}:String}}) > 0')
                 params[key] = term
+        count_queries.append(f"SELECT count() AS matches FROM {table} AS source WHERE " + ' AND '.join(where))
         if position:
             try:
                 params['before_time'] = utc(position['timestamp'])
@@ -132,6 +135,7 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
         predicate = re.sub(r'\b(router_ip|private_ip|public_ip|destination_ip)\b', r'source.\1', ' AND '.join(where))
         subqueries.append(f"SELECT {selection} FROM {table} AS source WHERE {predicate}")
     sql = 'SELECT * FROM (' + ' UNION ALL '.join(subqueries) + ') ORDER BY timestamp DESC, record_id DESC, kind DESC LIMIT {limit:UInt32}'
+    total = get_client().query('SELECT sum(matches) FROM (' + ' UNION ALL '.join(count_queries) + ')', parameters=params, settings={'max_execution_time':30, 'max_memory_usage':1_000_000_000}).result_rows[0][0] if include_total else None
     # SELECT * is over an explicit, filtered projection, never a base table.
     result = get_client().query(sql, parameters=params, settings={'max_execution_time':30, 'max_memory_usage':1_000_000_000})
     rows = [dict(zip(result.column_names, row)) for row in result.result_rows]
@@ -143,4 +147,4 @@ def query_logs(kind='all', keyword='', ip='', start=None, end=None, limit=200, c
         payload = dict(filter=fingerprint, start=start.isoformat(), end=end.isoformat(),
                        timestamp=utc(last['timestamp']).isoformat(), id=str(last['record_id']), kind=last['kind'])
         next_cursor = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-    return dict(query_ms=round((time.perf_counter()-query_started)*1000,2), results=rows, count=len(rows), next_cursor=next_cursor, start=start.isoformat(), end=end.isoformat())
+    return dict(query_ms=round((time.perf_counter()-query_started)*1000,2), results=rows, count=len(rows), total_count=total, next_cursor=next_cursor, start=start.isoformat(), end=end.isoformat())

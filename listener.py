@@ -25,6 +25,7 @@ from parser import (
     NAT_COLUMNS,
     EVENT_COLUMNS,
     NAT_V2_COLUMNS,
+    NAT_V2_DEFAULTS,
 )
 
 
@@ -279,6 +280,9 @@ class BatchInserter:
                 # as strings. Convert them back before
                 # ClickHouse insertion.
                 for row in rows:
+                    if table == "nat_sessions_v2":
+                        for key, value in NAT_V2_DEFAULTS.items():
+                            row.setdefault(key, value)
                     row["timestamp"] = (
                         datetime.fromisoformat(
                             row["timestamp"]

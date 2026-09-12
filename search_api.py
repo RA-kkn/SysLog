@@ -109,7 +109,7 @@ def csv_value(value):
 def export(options=Depends(search_options), user=Depends(auth.current)):
     if user['role'] != 'ADMIN' and not user['can_export']:
         raise HTTPException(403, 'Export permission required')
-    options.update(limit=1000, cursor=None)
+    options.update(limit=1000, cursor=None, include_total=False)
     first = search_logs(options, user)
     def stream():
         batch, written = first, 0
