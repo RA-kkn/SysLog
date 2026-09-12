@@ -506,6 +506,219 @@ function searchParams() {
     return p;
 }
 
+/*
+ * Parse old MikroTik SNAT records which were stored as events.
+ *
+ * IMPORTANT:
+ * - Nothing is hidden.
+ * - Nothing is deleted.
+ * - Original message remains available.
+ * - This only gives old NAT events a clean structured display.
+ */
+function parseNatEventMessage(message) {
+    if (!message) {
+        return null;
+    }
+
+    const text = String(message).trim();
+
+    /*
+     * Example supported:
+     *
+     * firewall,info forward:
+     * in:<pppoe-A1-muzamal> out:vlan2436,
+     * connection-state:new,snat proto TCP (SYN),
+     * 100.68.180.254:59586->13.229.133.126:443,
+     * NAT (100.68.180.254:59586->103.125.177.119:59586)
+     * ->13.229.133.126:443,
+     * prio 7->0, len 60
+     */
+
+    const regex =
+        /in:<([^>]+)>\s+out:([^\s,]+),\s*(?:connection-state:([\w-]+),\s*)?snat\s+proto\s+(TCP|UDP)(?:\s+\(([^)]*)\))?,\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\s*->\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+),\s*NAT\s*\(\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\s*->\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+)\s*\)\s*->\s*(\d{1,3}(?:\.\d{1,3}){3}):(\d+)(?:,\s*prio\s+\d+\s*->\s*\d+)?(?:,\s*len\s+(\d+))?/i;
+
+    const match = text.match(regex);
+
+    if (!match) {
+        return null;
+    }
+
+    return {
+        subscriber_id: match[1] || '',
+        input_interface: match[1] || '',
+        output_interface: match[2] || '',
+        connection_state: match[3] || '',
+        protocol: (match[4] || '').toUpperCase(),
+        tcp_flags: match[5] || '',
+
+        private_ip: match[6] || '',
+        private_port: match[7] || '',
+
+        original_destination_ip: match[8] || '',
+        original_destination_port: match[9] || '',
+
+        nat_private_ip: match[10] || '',
+        nat_private_port: match[11] || '',
+
+        public_ip: match[12] || '',
+        public_port: match[13] || '',
+
+        destination_ip: match[14] || '',
+        destination_port: match[15] || '',
+
+        packet_length: match[16] || ''
+    };
+}
+
+
+/*
+ * Clean one-line summary for Events table.
+ *
+ * Normal events keep their original message.
+ * Valid old NAT events get a structured readable summary.
+ */
+function eventSummary(row) {
+    const nat = parseNatEventMessage(
+        row.message
+    );
+
+    if (!nat) {
+        return row.message || '—';
+    }
+
+    let summary =
+        `${nat.subscriber_id || 'NAT'} | ` +
+        `${nat.private_ip}:${nat.private_port} → ` +
+        `${nat.public_ip}:${nat.public_port} → ` +
+        `${nat.destination_ip}:${nat.destination_port} | ` +
+        `${nat.protocol}`;
+
+    if (nat.tcp_flags) {
+        summary += ` (${nat.tcp_flags})`;
+    }
+
+    return summary;
+}
+
+
+/*
+ * Add structured fields to Details for old NAT event records.
+ *
+ * Raw/original message is still shown as well.
+ */
+function eventNatDetailGrid(row) {
+    const nat = parseNatEventMessage(
+        row.message
+    );
+
+    if (!nat) {
+        return null;
+    }
+
+    const grid =
+        document.createElement('div');
+
+    grid.className = 'detail-grid';
+
+    const values = {
+        timestamp: row.timestamp,
+        received_at: row.received_at,
+        router_ip: row.router_ip,
+
+        event_type:
+            row.event_type ||
+            'nat_unparsed',
+
+        subscriber_id:
+            nat.subscriber_id,
+
+        private_ip:
+            nat.private_ip,
+
+        private_port:
+            nat.private_port,
+
+        public_ip:
+            nat.public_ip,
+
+        public_port:
+            nat.public_port,
+
+        destination_ip:
+            nat.destination_ip,
+
+        destination_port:
+            nat.destination_port,
+
+        protocol:
+            nat.protocol,
+
+        input_interface:
+            nat.input_interface,
+
+        output_interface:
+            nat.output_interface,
+
+        connection_state:
+            nat.connection_state,
+
+        tcp_flags:
+            nat.tcp_flags,
+
+        packet_length:
+            nat.packet_length,
+
+        record_id:
+            row.record_id,
+
+        raw_message:
+            row.message
+    };
+
+    for (const [key, rawValue] of Object.entries(values)) {
+        if (
+            rawValue === '' ||
+            rawValue == null
+        ) {
+            continue;
+        }
+
+        const item =
+            document.createElement('div');
+
+        item.className =
+            'detail-field';
+
+        if (key === 'raw_message') {
+            item.classList.add('wide');
+        }
+
+        const label =
+            document.createElement('span');
+
+        label.textContent =
+            key.replaceAll('_', ' ');
+
+        const content =
+            document.createElement('strong');
+
+        content.textContent =
+            key === 'timestamp' ||
+            key === 'received_at'
+                ? date(rawValue)
+                : String(rawValue);
+
+        item.append(
+            label,
+            content
+        );
+
+        grid.append(item);
+    }
+
+    return grid;
+}
+
 
 function detailGrid(row) {
     const grid =
@@ -661,7 +874,6 @@ function renderLogs(rows, kind) {
     }
 
     for (const row of rows) {
-
         const tr =
             document.createElement('tr');
 
@@ -669,10 +881,25 @@ function renderLogs(rows, kind) {
             String(row.kind)
                 .startsWith('nat_sessions');
 
+        /*
+         * Some historical valid NAT records may exist
+         * inside events as nat_unparsed.
+         *
+         * We DO NOT hide them.
+         * We only display them in structured form.
+         */
+        const parsedEventNat =
+            !nat
+                ? parseNatEventMessage(
+                    row.message
+                )
+                : null;
+
         const expanded =
             document.createElement('tr');
 
         expanded.hidden = true;
+
         expanded.className =
             'detail-row';
 
@@ -682,19 +909,26 @@ function renderLogs(rows, kind) {
         expandedCell.colSpan =
             keys.length;
 
-        expandedCell.append(
-            detailGrid(row)
-        );
+        /*
+         * For old NAT events use structured NAT details.
+         * For everything else use the normal details.
+         */
+        const details =
+            parsedEventNat
+                ? eventNatDetailGrid(row)
+                : detailGrid(row);
+
+        expandedCell.append(details);
 
         for (const key of keys) {
-
             if (key === 'details') {
-
                 const td =
                     cell(tr, '');
 
                 const toggle =
-                    document.createElement('button');
+                    document.createElement(
+                        'button'
+                    );
 
                 toggle.className =
                     'secondary';
@@ -708,7 +942,6 @@ function renderLogs(rows, kind) {
                 );
 
                 toggle.onclick = () => {
-
                     expanded.hidden =
                         !expanded.hidden;
 
@@ -728,53 +961,84 @@ function renderLogs(rows, kind) {
                 td.append(toggle);
 
             } else if (key === 'summary') {
+                /*
+                 * All Logs summary.
+                 */
+                let summary;
+
+                if (nat) {
+                    summary =
+                        `${
+                            row.subscriber_id ||
+                            'NAT'
+                        } | ` +
+                        `${row.private_ip}:` +
+                        `${row.private_port} → ` +
+                        `${row.public_ip}:` +
+                        `${row.public_port} → ` +
+                        `${row.destination_ip}:` +
+                        `${row.destination_port} | ` +
+                        `${String(
+                            row.protocol || ''
+                        ).toUpperCase()}`;
+
+                } else {
+                    /*
+                     * Event may itself contain an old
+                     * structured NAT record.
+                     */
+                    summary =
+                        eventSummary(row);
+                }
 
                 cell(
                     tr,
-                    nat
-                        ? `${
-                              row.subscriber_id ||
-                              'NAT'
-                          } | ${
-                              row.private_ip
-                          }:${
-                              row.private_port
-                          } → ${
-                              row.public_ip
-                          }:${
-                              row.public_port
-                          } → ${
-                              row.destination_ip
-                          }:${
-                              row.destination_port
-                          } | ${
-                              String(
-                                  row.protocol
-                              ).toUpperCase()
-                          }`
-                        : row.message,
-                    nat
+                    summary,
+                    nat || parsedEventNat
                         ? 'nat-summary'
                         : null
                 );
 
             } else {
+                let value;
 
-                const value =
-                    key === 'timestamp'
-                        ? date(row[key])
-                        : key === 'kind'
-                        ? (
-                            nat
-                                ? 'NAT translation'
-                                : row.event_type ||
-                                  'Event'
-                          )
-                        : key === 'protocol'
-                        ? String(
-                            row[key]
-                          ).toUpperCase()
-                        : row[key];
+                if (key === 'timestamp') {
+                    value =
+                        date(row[key]);
+
+                } else if (key === 'kind') {
+                    value =
+                        nat
+                            ? 'NAT translation'
+                            : row.event_type ||
+                              'Event';
+
+                } else if (
+                    key === 'protocol'
+                ) {
+                    value =
+                        String(
+                            row[key] || ''
+                        ).toUpperCase();
+
+                } else if (
+                    key === 'message' &&
+                    !nat
+                ) {
+                    /*
+                     * THIS is the important Events fix.
+                     *
+                     * Every record remains visible.
+                     * Valid old NAT event -> clean summary.
+                     * Normal event -> original message.
+                     */
+                    value =
+                        eventSummary(row);
+
+                } else {
+                    value =
+                        row[key];
+                }
 
                 cell(
                     tr,
@@ -783,7 +1047,12 @@ function renderLogs(rows, kind) {
                     key.includes('port') ||
                     key === 'timestamp'
                         ? 'endpoint'
-                        : null
+                        : (
+                            key === 'message' &&
+                            parsedEventNat
+                                ? 'nat-summary'
+                                : null
+                          )
                 );
             }
         }

@@ -540,6 +540,11 @@ MIKROTIK_SNAT = re.compile(
 
     + IP_PORT.format(name="translated_destination")
 
+    # MikroTik may include packet priority before len, for example:
+    #   , prio 7->0, len 52
+    # Keep it optional because many routers omit it.
+    + r"(?:,\s*prio\s+\d+\s*->\s*\d+)?"
+
     + r"(?:,\s*len\s+"
     r"(?P<length>\d+))?"
 
