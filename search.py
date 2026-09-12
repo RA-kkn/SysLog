@@ -1,9 +1,9 @@
-﻿"""One production table; bounded NAT-only search with exact totals and keyset paging."""
+"""One production table; bounded NAT-only search with exact totals and keyset paging."""
 import base64
 import hashlib
 import ipaddress
 import json
-import uuid
+from record_ids import as_id
 import time
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
@@ -70,9 +70,9 @@ def query_logs(kind='nat_sessions_v2',keyword='',ip='',start=None,end=None,limit
     client=get_client()
     total=client.query('SELECT count() FROM nat_sessions_v2 AS source WHERE '+' AND '.join(where),parameters=params,settings=QUERY_SETTINGS).result_rows[0][0] if include_total else None
     if position:
-        try:params.update(before_time=utc(position['timestamp']),before_id=uuid.UUID(position['id']))
+        try:params.update(before_time=utc(position['timestamp']),before_id=as_id(position['id']))
         except (ValueError,KeyError,TypeError):raise HTTPException(422,'Invalid cursor')
-        where.append('(source.timestamp,source.record_id)<({before_time:DateTime64(3)},{before_id:UUID})')
+        where.append('(source.timestamp,source.record_id)<({before_time:DateTime64(3)},{before_id:UInt64})')
     select=[]
     for field in DISPLAY_FIELDS:
         if field in FIELD_BITS:

@@ -43,7 +43,7 @@ class NormalizationTests(unittest.TestCase):
     def test_old_event_spool_preserves_identity(self):
         original = self.row(b'unknown')
         row = normalize_spooled('events', original)
-        self.assertEqual(str(row['record_id']), original['record_id'])
+        self.assertEqual(row['record_id'], original['record_id'])
         self.assertEqual(row['migration_source'], 'events_spool')
         self.assertEqual(row['raw_message'], 'unknown')
 

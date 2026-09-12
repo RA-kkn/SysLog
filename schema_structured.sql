@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS syslog_db.nat_sessions_v2
 (
  timestamp DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9)),
  received_at DateTime64(3, 'UTC') CODEC(Delta, ZSTD(9)),
- record_id UUID CODEC(ZSTD(9)),
+ record_id UInt64 CODEC(Delta, ZSTD(9)),
  router_ip IPv4 CODEC(ZSTD(9)),
  private_ip IPv4 CODEC(ZSTD(9)),
  private_port UInt16 CODEC(ZSTD(9)),

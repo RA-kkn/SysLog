@@ -8,6 +8,7 @@ from pathlib import Path
 
 from parser import NAT_V2_COLUMNS, normalize_syslog
 from nat_writer import insert_batch
+from record_ids import legacy_ids
 
 
 def stamp(value):
@@ -28,7 +29,7 @@ def candidate(source):
         or row['field_mask'] & 5 == 5  # Explicit private and public addresses.
     ):
         return None
-    row['record_id'] = uuid.UUID(str(source['record_id']))
+    row['record_id'] = str(source['record_id'])
     row['migration_source'] = 'events'
     return row
 
@@ -68,14 +69,17 @@ def migrate(client, start, end, apply=False, batch_size=2000):
         rows = [row for source in sources if (row := candidate(source)) is not None]
         if len({str(row['record_id']) for row in rows}) != len(rows):
             raise RuntimeError('Duplicate source UUIDs; investigate before migration')
+        mapping = legacy_ids(['events:'+str(row['record_id']) for row in rows])
+        for row in rows:
+            row['record_id'] = mapping['events:'+str(row['record_id'])]
         report['eligible'] += len(rows)
         report['retained_only'] += len(sources)-len(rows)
         def verify():
             if not rows:
                 return {}, []
             result = client.query('SELECT '+','.join(NAT_V2_COLUMNS)+
-                                  ' FROM nat_sessions_v2 WHERE record_id IN {ids:Array(UUID)}',
-                                  parameters={'ids': [str(row['record_id']) for row in rows]})
+                                  ' FROM nat_sessions_v2 WHERE record_id IN {ids:Array(UInt64)}',
+                                  parameters={'ids': [row['record_id'] for row in rows]})
             found = {}
             for values in result.result_rows:
                 row = dict(zip(result.column_names, values))

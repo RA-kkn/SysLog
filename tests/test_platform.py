@@ -143,7 +143,7 @@ class PlatformTests(unittest.TestCase):
 
     def test_cursor_equal_timestamps(self):
         stamp=datetime.now(timezone.utc)
-        ids=[uuid.uuid4() for _ in range(101)]
+        ids=list(range(1001, 1102))
         result=SimpleNamespace(column_names=['timestamp','record_id','kind'],result_rows=[(stamp,i,'events') for i in ids])
         with patch('search.get_client') as client:
             client.return_value.query.return_value=result

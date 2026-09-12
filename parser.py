@@ -1,7 +1,7 @@
 import os
 import base64
 import re
-import uuid
+from record_ids import next_id, as_id
 import ipaddress
 
 from datetime import datetime, timezone
@@ -794,7 +794,7 @@ def empty_record(raw, src_ip, src_port, received_at, stamp=None):
     text, binary = preserve_raw(raw)
     received_at = _normalise_received_at(received_at)
     row = dict(NAT_V2_DEFAULTS, timestamp=stamp or received_at, received_at=received_at,
-        record_id=str(uuid.uuid4()), router_ip=src_ip, protocol='', subscriber_id='',
+        record_id=next_id(), router_ip=src_ip, protocol='', subscriber_id='',
         source_port=src_port, field_mask=0, raw_message=text, raw_bytes_b64=binary,
         parse_status='unknown', record_type='normalized_syslog')
     for key in ENDPOINT_FIELDS:
@@ -910,5 +910,5 @@ def normalize_spooled(table, old):
         row=dict(NAT_V2_DEFAULTS,**old)
     else:
         raise ValueError('Unsupported spool destination')
-    row.update(timestamp=stamp,received_at=received,record_id=uuid.UUID(str(old['record_id'])))
+    row.update(timestamp=stamp,received_at=received,record_id=as_id(old['record_id']))
     return row

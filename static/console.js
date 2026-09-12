@@ -1575,3 +1575,45 @@ theme();
         }
     }
 })();
+// Admin-only range deletion uses the same session and CSRF-aware api helper.
+let deletePreviewRange = null;
+let deleteBusy = false;
+function deleteBounds() { return {start: $('deleteFrom').value, end: $('deleteTo').value}; }
+function updateDeleteButton() {
+    $('deleteSubmit').disabled = deleteBusy || !deletePreviewRange ||
+        JSON.stringify(deleteBounds()) !== deletePreviewRange ||
+        $('deleteConfirmation').value !== 'DELETE PERMANENTLY';
+}
+for (const id of ['deleteFrom', 'deleteTo']) {
+    $(id).addEventListener('input', () => {
+        deletePreviewRange = null;
+        $('deleteCount').textContent = 'Range changed. Preview again.';
+        updateDeleteButton();
+    });
+}
+$('deleteConfirmation').addEventListener('input', updateDeleteButton);
+$('deletePreview').onclick = async () => {
+    deletePreviewRange = null;
+    updateDeleteButton();
+    const range = deleteBounds();
+    try {
+        const result = await api('/api/admin/delete-preview', {method:'POST', body:JSON.stringify(range), headers:{'Content-Type':'application/json'}});
+        if (JSON.stringify(range) !== JSON.stringify(deleteBounds())) return;
+        deletePreviewRange = JSON.stringify(range);
+        $('deleteCount').textContent = `${num(result.count)} matching rows. Only nat_sessions_v2 will be affected.`;
+        $('deleteStatus').textContent = '';
+    } catch (error) { $('deleteStatus').textContent = error.message; }
+    updateDeleteButton();
+};
+$('deleteSubmit').onclick = async () => {
+    if ($('deleteSubmit').disabled) return;
+    deleteBusy = true; updateDeleteButton();
+    try {
+        const result = await api('/api/admin/delete-data', {method:'POST', body:JSON.stringify({...deleteBounds(), confirmation:$('deleteConfirmation').value}), headers:{'Content-Type':'application/json'}});
+        $('deleteStatus').textContent = `${result.message} Matching rows at submission: ${num(result.count)}. Audit: ${result.audit_id}. Preview again later to check remaining rows.`;
+    } catch (error) { $('deleteStatus').textContent = error.message; }
+    finally {
+        deleteBusy = false; deletePreviewRange = null;
+        $('deleteConfirmation').value = ''; updateDeleteButton();
+    }
+};

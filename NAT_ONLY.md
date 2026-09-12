@@ -189,3 +189,20 @@ the VM's ClickHouse 25.8 must still pass deployment validation.
 | Documentation | `README.md`, new `NAT_ONLY.md` |
 
 No runtime dependency or requirements change is necessary.
+
+## Destructive log administration and compact IDs
+
+The NAT writer now uses a durable compact `UInt64` `record_id` with `Delta, ZSTD(9)`. The allocator reserves blocks of 65,536 IDs in `data/record-ids.db` using a SQLite `BEGIN IMMEDIATE` transaction and `synchronous=FULL`; packet ingestion consumes the reserved block in memory, so there is no per-packet SQLite write. Unused IDs after a crash are intentionally skipped, never reused. Historical Event UUIDs are mapped durably to compact IDs during explicit migration.
+
+Changing an existing UUID table is deliberately not part of normal deployment. For a test installation, stop senders, stop both services, wait at least 15 seconds, and ensure the spool is empty. Then run:
+
+```bash
+.venv/bin/python manage.py wipe-logs
+# type: DELETE ALL LOG DATA
+.venv/bin/python manage.py migrate-record-id --schema-backup data/backups/record-id-transition.json
+# type: MIGRATE EMPTY NAT TABLE
+```
+
+`wipe-logs` truncates only the fixed allow-list of ClickHouse log tables and preserves users, devices, approvals, settings, credentials and SQLite configuration. `migrate-record-id` refuses a non-empty NAT table, a live listener/API, a recent listener heartbeat, pending spool batches, pending ClickHouse mutations, or a non-UUID source schema. It snapshots the exact CREATE definition and atomically exchanges the empty UUID table with the UInt64 replacement. The original empty UUID table is retained under the generated archive name for rollback. Neither command runs automatically.
+
+After the transition, start the listener/API and run the normal schema validation. The Settings page contains an ADMIN-only **Delete Stored Data** card. From/To values are interpreted as Asia/Karachi, converted to UTC server-side, previewed first, and deletion requires typing `DELETE PERMANENTLY`. Only `nat_sessions_v2` is affected. ClickHouse performs the delete as a background mutation and the SQLite `deletion_audit` table records actor, requested/UTC range, preview count and submission status.

@@ -83,6 +83,35 @@ def logout(request: Request, response: Response, user=Depends(auth.current)):
     response.delete_cookie('session', path='/')
     return {'ok':True}
 
+class DeleteRange(BaseModel):
+    start: str = Field(max_length=64)
+    end: str = Field(max_length=64)
+
+class DeleteRequest(DeleteRange):
+    confirmation: str = Field(max_length=64)
+
+@app.post('/api/admin/delete-preview')
+def delete_preview(body: DeleteRange, user=Depends(auth.admin)):
+    from log_admin import preview
+    try:
+        return preview(get_client(), body.start, body.end)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception:
+        log.exception('event=delete_preview_failed')
+        raise HTTPException(503, 'Deletion preview unavailable')
+
+@app.post('/api/admin/delete-data', status_code=202)
+def delete_data(body: DeleteRequest, user=Depends(auth.admin)):
+    from log_admin import delete_range
+    try:
+        return delete_range(get_client(), user['username'], body.start, body.end, body.confirmation)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    except Exception:
+        log.exception('event=delete_submission_failed')
+        raise HTTPException(503, 'Deletion failed or status is unknown. Inspect audit/system.mutations before retrying.')
+
 def search_options(kind: str='nat_sessions_v2', keyword: str=Query('',max_length=512), ip: str='',
                    start: Optional[datetime]=None, end: Optional[datetime]=None,
                    limit: int=200, cursor: Optional[str]=None,

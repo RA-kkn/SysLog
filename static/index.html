@@ -48,6 +48,12 @@
 
 <div class="card"><h2>Runtime configuration</h2><p class="muted">Edit environment configuration and restart services to apply. Review generated TTL SQL before applying: reducing retention can delete old records.</p><pre id="runtime"></pre></div></div>
 
+<section id="deleteStoredData" class="card admin" hidden><h2>Delete Stored Data</h2>
+<p class="muted">Permanent deletion of NAT log rows only. This cannot be undone. From is inclusive; To is exclusive. Times are Asia/Karachi.</p>
+<div class="filters"><label>From (Asia/Karachi)<input id="deleteFrom" type="datetime-local" required></label><label>To (Asia/Karachi)<input id="deleteTo" type="datetime-local" required></label><button id="deletePreview" type="button" class="secondary">Preview matching rows</button></div>
+<p id="deleteCount" role="status">Preview a range before deleting.</p>
+<label>Type DELETE PERMANENTLY<input id="deleteConfirmation" autocomplete="off" placeholder="DELETE PERMANENTLY"></label>
+<button id="deleteSubmit" type="button" disabled>Delete permanently</button><p id="deleteStatus" role="status"></p></section>
 <div class="card"><h2>Console users</h2><p class="muted">Editing a user revokes their current sessions. The last active administrator is protected.</p><form id="userForm" class="filters"><label>Username<input id="userName" required maxlength="64"></label><label>Full name<input id="fullName" maxlength="128"></label><label>Password<input id="userPassword" type="password" placeholder="Required for new user" autocomplete="new-password" minlength="12"></label><label>Role<select id="userRole"><option>VIEWER</option><option>OPERATOR</option><option>ADMIN</option></select></label><label>State<select id="userEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label><label>Export<select id="userExport"><option value="false">No</option><option value="true">Yes</option></select></label><button>Save user</button></form><div id="users" class="table-wrap"></div></div></section></main><footer>ISP Log Console · UTC storage · <span id="footerUser"></span></footer></div>
 
 <dialog id="confirm"><form method="dialog"><h2 id="confirmTitle"></h2><p id="confirmText"></p><input id="confirmInput" hidden maxlength="128"><div class="filters"><button value="cancel" class="secondary">Cancel</button><button value="ok">Confirm</button></div></form></dialog></body></html>

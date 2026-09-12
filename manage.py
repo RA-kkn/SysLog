@@ -12,6 +12,9 @@ def main():
     sub = parser.add_subparsers(dest='command',required=True)
     admin = sub.add_parser('create-admin'); admin.add_argument('username')
     sub.add_parser('init-schema')
+    sub.add_parser('wipe-logs')
+    compact = sub.add_parser('migrate-record-id')
+    compact.add_argument('--schema-backup', required=True)
     migration = sub.add_parser('prepare-nat-v2'); migration.add_argument('schema_backup')
     ttl = sub.add_parser('retention-plan'); ttl.add_argument('--days',type=int,default=config.RETENTION_DAYS)
     sub.add_parser('storage')
@@ -21,7 +24,17 @@ def main():
     tz = sub.add_parser('set-display-timezone'); tz.add_argument('timezone')
     backup = sub.add_parser('backup-config'); backup.add_argument('destination')
     args = parser.parse_args()
-    if args.command == 'create-admin':
+    if args.command in ('wipe-logs', 'migrate-record-id'):
+        from database import get_client
+        from log_admin import wipe, migrate_id_schema
+        if args.command == 'wipe-logs':
+            print('PERMANENT: clears only known ClickHouse log tables. Stop all writers and drain spool first.')
+            confirmation = input('Type DELETE ALL LOG DATA: ')
+            wipe(get_client(), confirmation)
+        else:
+            confirmation = input('Type MIGRATE EMPTY NAT TABLE: ')
+            migrate_id_schema(get_client(), confirmation, args.schema_backup)
+    elif args.command == 'create-admin':
         import auth
         import device_store
         with device_store._conn() as c:
