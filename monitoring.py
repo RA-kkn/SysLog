@@ -5,15 +5,30 @@ import config
 import device_store
 from database import get_client
 
+def ingestion_snapshots():
+    now = time.time()
+    try:
+        receiver = json.loads((config.DATA_DIR/'receiver.json').read_text())
+        receiver['up'] = now-receiver['heartbeat'] < 10 and receiver.get('state') == 'running'
+    except (OSError, ValueError, KeyError):
+        receiver = dict(up=False, warnings=['Receiver heartbeat unavailable'])
+    workers = []
+    for i in range(receiver.get('num_workers', config.NUM_WORKERS)):
+        try:
+            row = json.loads((config.DATA_DIR/f'listener-{i}.json').read_text())
+            if row.get('run_id') != receiver.get('run_id'):
+                continue
+            row['up'] = now-row['heartbeat'] < 10 and row.get('state') == 'running'
+            workers.append(row)
+        except (OSError, ValueError, KeyError):
+            continue
+    return receiver, workers
+
+
 def authorization_applied():
     expected = device_store.authorization_hash()
-    snapshots = []
-    for path in config.DATA_DIR.glob('listener-*.json'):
-        try:
-            snapshots.append(json.loads(path.read_text()))
-        except (OSError,ValueError):
-            return 'unknown: unreadable listener heartbeat'
-    if not snapshots or any(time.time()-s.get('heartbeat',0)>10 for s in snapshots):
+    receiver, snapshots = ingestion_snapshots()
+    if not receiver['up'] or len(snapshots) != receiver.get('num_workers') or not all(s['up'] for s in snapshots):
         return 'unknown: listener unavailable'
     return 'yes (application ACL)' if all(s.get('authorization_hash')==expected for s in snapshots) else 'pending listener refresh'
 
@@ -21,7 +36,8 @@ def ingestion_history(now):
     # Only complete, covered minutes, ending one minute behind the clock to
     # allow the listener's 10-second coverage checkpoint to finish.
     last = int(now//60)*60-120
-    expected = config.NUM_WORKERS if __import__('socket').__dict__.get('SO_REUSEPORT') is not None else 1
+    receiver, _ = ingestion_snapshots()
+    expected = receiver.get('num_workers', config.NUM_WORKERS)
     with device_store._conn() as c:
         coverage = dict(c.execute('SELECT minute,min(seconds) FROM ingest_coverage WHERE minute>=? GROUP BY minute HAVING count(*)>=?', (last-7*86400,expected)))
         inserts = dict(c.execute('SELECT minute,rows FROM ingest_minutes WHERE minute>=?', (last-7*86400,)))
@@ -42,15 +58,10 @@ def ingestion_history(now):
 
 def report():
     now = time.time()
-    workers = []
-    for path in config.DATA_DIR.glob('listener-*.json'):
-        try:
-            data = json.loads(path.read_text())
-            data['up'] = now - data['heartbeat'] < 10
-            workers.append(data)
-        except (OSError, ValueError):
-            continue
-    result = dict(api='UP', sqlite='UP', listener='UP' if workers and all(w['up'] for w in workers) else 'DOWN',
+    receiver, workers = ingestion_snapshots()
+    listener_up = receiver['up'] and len(workers)==receiver.get('num_workers') and all(w['up'] for w in workers)
+    result = dict(api='UP', sqlite='UP', listener='UP' if listener_up else 'DOWN',
+                  receiver=receiver, kernel_udp=receiver.get('kernel_udp'), warnings=receiver.get('warnings', []),
                   workers=workers, listener_port=config.LISTEN_PORT, devices=device_store.counts(),
                   cpu_percent=psutil.cpu_percent(interval=.1), ram=psutil.virtual_memory()._asdict(),
                   load=psutil.getloadavg(), retention_target_days=config.RETENTION_DAYS,

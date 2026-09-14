@@ -973,6 +973,19 @@ $('approveForm').onsubmit =
 async function system() {
     const d =
         await api('/api/system');
+    const receiver = d.receiver || {};
+    stats('receiverStats', [
+        ['Received', num(receiver.received)], ['Queued', num(receiver.queued)],
+        ['Queue drops', num(receiver.dropped_queue)],
+        ['Queue depth / capacity', `${num(receiver.queue_size)} / ${num(receiver.queue_capacity)}`],
+        ['Socket receive buffer', bytes(receiver.effective_rcvbuf)],
+        ['Queue transport failures', num(receiver.dropped_transport)]
+    ]);
+    const kernel = d.kernel_udp || {};
+    stats('kernelStats', ['InDatagrams','InErrors','RcvbufErrors','IgnoredMulti','MemErrors'].map(key => [key, num(kernel[key])]));
+    const alerts = d.warnings || [];
+    $('ingestWarnings').textContent = alerts.length ? alerts.join(' | ') : 'No new ingestion warnings in the latest sample.';
+
 
     stats(
         'healthStats',
@@ -1204,20 +1217,14 @@ async function system() {
             'worker-grid';
 
         const entries = [
-            ['Received', num(w.received)],
-            ['Queued', num(w.queued)],
+            ['Consumed from shared queue', num(w.consumed)],
             ['NAT parsed', num(w.nat_parsed)],
             ['Fallback records', num(w.normalized_fallback)],
             ['Stored / acknowledged', num(w.inserted)],
             ['Unauthorized', num(w.denied)],
-            [
-                'Queue',
-                `${num(w.queue_size)} / ${num(w.queue_capacity)}`
-            ],
             ['Spool', bytes(w.spool_bytes)],
             ['Parse failures', num(w.parse_failures)],
             ['Write failures', num(w.write_failures)],
-            ['Queue drops', num(w.dropped_queue)],
             ['Spool drops', num(w.dropped_spool)],
             [
                 'Processing drops',

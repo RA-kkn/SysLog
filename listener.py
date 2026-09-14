@@ -34,11 +34,8 @@ logging.basicConfig(
 
 log = logging.getLogger("listener")
 
-HAS_SO_REUSEPORT = hasattr(socket, "SO_REUSEPORT")
-
-
 def effective_workers():
-    return config.NUM_WORKERS if HAS_SO_REUSEPORT else 1
+    return config.NUM_WORKERS
 
 
 # ============================================================
@@ -374,25 +371,13 @@ class BatchInserter:
 # LISTENER WORKER
 # ============================================================
 
-def worker_main(
-    worker_id,
-    stop=None,
-):
-    stop = stop or mp.Event()
-
-    signal.signal(
-        signal.SIGINT,
-        lambda *_: stop.set(),
-    )
-
-    signal.signal(
-        signal.SIGTERM,
-        lambda *_: stop.set(),
-    )
-
+def worker_main(worker_id, packets, run_id):
+    # Only the receiver handles shutdown signals. Consumers exit on FIFO markers,
+    # after every packet published by that receiver has been consumed.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     metrics = Counter(
-        received=0,
-        queued=0,
+        consumed=0,
 
         parsed=0,
         nat_parsed=0,
@@ -406,20 +391,11 @@ def worker_main(
         parse_failures=0,
         write_failures=0,
 
-        dropped_queue=0,
         dropped_spool=0,
         dropped_processing=0,
 
         device_tracking_failures=0,
         statistics_failures=0,
-    )
-
-    # Bounded in-memory queue.
-    #
-    # If parser/writer cannot keep up forever, memory will
-    # not grow without limit.
-    packets = queue.Queue(
-        maxsize=config.QUEUE_SIZE
     )
 
     inserter = BatchInserter(
@@ -445,20 +421,13 @@ def worker_main(
             + config.BATCH_MAX_SECONDS
         )
 
-        while (
-            not stop.is_set()
-            or not packets.empty()
-        ):
+        while True:
             try:
-                (
-                    data,
-                    ip,
-                    port,
-                    received_at,
-                ) = packets.get(
-                    timeout=0.1
-                )
-
+                packet = packets.get(timeout=0.1)
+                if packet is None:
+                    break
+                data, ip, port, received_at = packet
+                metrics['consumed'] += 1
                 try:
                     # ----------------------------------------
                     # DEVICE AUTHORIZATION
@@ -529,9 +498,6 @@ def worker_main(
                     log.exception(
                         "event=processing_failure"
                     )
-
-                finally:
-                    packets.task_done()
 
             except queue.Empty:
                 pass
@@ -635,312 +601,235 @@ def worker_main(
                     rows,
                 )
 
-    processor = threading.Thread(
-        target=process,
-        name=f"parser-{worker_id}",
-    )
+    finished = threading.Event()
+    failure = []
 
+    def run_processor():
+        try:
+            process()
+        except BaseException as exc:
+            failure.append(exc)
+            log.exception('event=processor_thread_failed worker=%s', worker_id)
+        finally:
+            finished.set()
+
+    processor = threading.Thread(target=run_processor, name=f'parser-{worker_id}', daemon=True)
     processor.start()
+    last_coverage = time.time()
 
-    # ========================================================
-    # UDP SOCKET
-    # ========================================================
-
-    sock = socket.socket(
-        socket.AF_INET,
-        socket.SOCK_DGRAM,
-    )
-
-    if HAS_SO_REUSEPORT:
-        sock.setsockopt(
-            socket.SOL_SOCKET,
-            socket.SO_REUSEPORT,
-            1,
-        )
-
-    sock.setsockopt(
-        socket.SOL_SOCKET,
-        socket.SO_RCVBUF,
-        config.SOCKET_RCVBUF,
-    )
-
-    sock.settimeout(
-        0.25
-    )
+    def snapshot(state='running'):
+        spool_batches, spool_bytes = inserter.spool.size()
+        write_snapshot(f'listener-{worker_id}.json', dict(metrics, role='processor',
+            worker_id=worker_id, run_id=run_id, pid=os.getpid(), started=started,
+            heartbeat=time.time(), state=state, spool_batches=spool_batches,
+            spool_bytes=spool_bytes, authorization_hash=device_store.authorization_hash()))
 
     try:
-        sock.bind(
-            (
-                config.LISTEN_HOST,
-                config.LISTEN_PORT,
-            )
-        )
-
-        log.info(
-            "event=startup worker=%s udp_port=%s",
-            worker_id,
-            config.LISTEN_PORT,
-        )
-
-        last_snapshot = 0
-        last_coverage = time.time()
-
-        # ====================================================
-        # RECEIVE LOOP
-        # ====================================================
-
-        while not stop.is_set():
-            if (
-                not processor.is_alive()
-                or not inserter.writer.is_alive()
-            ):
-                log.critical(
-                    "event=ingestion_thread_dead"
-                )
-
-                raise RuntimeError(
-                    "Ingestion thread stopped unexpectedly"
-                )
-
-            try:
-                # --------------------------------------------
-                # RECEIVE UDP PACKET
-                # --------------------------------------------
-
-                data, (
-                    ip,
-                    port,
-                ) = sock.recvfrom(
-                    65535
-                )
-
-                # ============================================
-                # IMPORTANT TIMESTAMP
-                # ============================================
-                #
-                # Capture server receive timestamp IMMEDIATELY
-                # after recvfrom().
-                #
-                # This is NOT necessarily the event timestamp.
-                #
-                # parser.py will extract the timestamp carried
-                # inside the router/syslog packet and store:
-                #
-                #     timestamp   = router packet/event time
-                #     received_at = this server receive time
-                #
-                received_at = datetime.now(
-                    timezone.utc
-                )
-
-                metrics[
-                    "received"
-                ] += 1
-
+        while not finished.is_set():
+            if not inserter.writer.is_alive():
+                raise RuntimeError('ClickHouse writer thread exited unexpectedly')
+            now = time.time()
+            if now-last_coverage >= 10:
                 try:
-                    packets.put_nowait(
-                        (
-                            data,
-                            ip,
-                            port,
-                            received_at,
-                        )
-                    )
-
-                    metrics[
-                        "queued"
-                    ] += 1
-
-                except queue.Full:
-                    # Never allow an unlimited RAM backlog.
-                    metrics[
-                        "dropped_queue"
-                    ] += 1
-
-            except socket.timeout:
-                pass
-
-            # -----------------------------------------------
-            # CONTINUOUS OBSERVATION COVERAGE
-            # -----------------------------------------------
-
-            if (
-                time.time()
-                - last_coverage
-                >= 10
-            ):
-                coverage_end = time.time()
-
-                try:
-                    device_store.record_coverage(
-                        worker_id,
-                        last_coverage,
-                        coverage_end,
-                    )
-
+                    device_store.record_coverage(worker_id, last_coverage, now)
                 except Exception:
-                    metrics[
-                        "statistics_failures"
-                    ] += 1
-
-                    log.exception(
-                        "event=coverage_statistics_failure"
-                    )
-
-                last_coverage = coverage_end
-
-            # -----------------------------------------------
-            # HEALTH/METRICS SNAPSHOT
-            # -----------------------------------------------
-
-            if (
-                time.time()
-                - last_snapshot
-                >= 1
-            ):
-                spool_batches, spool_bytes = (
-                    inserter.spool.size()
-                )
-
-                approved_ips = (
-                    device_store.get_approved_ips()
-                )
-
-                snapshot = dict(
-                    metrics,
-
-                    heartbeat=time.time(),
-                    started=started,
-
-                    pid=os.getpid(),
-
-                    queue_size=packets.qsize(),
-                    queue_capacity=config.QUEUE_SIZE,
-
-                    port=config.LISTEN_PORT,
-
-                    authorization_hash=(
-                        device_store.authorization_hash(
-                            approved_ips
-                        )
-                    ),
-
-                    spool_batches=spool_batches,
-                    spool_bytes=spool_bytes,
-
-                    # Python's portable socket API does not
-                    # expose Linux kernel UDP drop counters
-                    # here.
-                    kernel_drops=None,
-                )
-
-                path = (
-                    config.DATA_DIR
-                    / f"listener-{worker_id}.json"
-                )
-
-                temp = path.with_suffix(
-                    ".tmp"
-                )
-
-                temp.write_text(
-                    json.dumps(snapshot),
-                    encoding="utf-8",
-                )
-
-                temp.replace(
-                    path
-                )
-
-                last_snapshot = time.time()
-
-    finally:
-        # ====================================================
-        # CLEAN SHUTDOWN
-        # ====================================================
-
-        stop.set()
-
-        sock.close()
-
-        # process() drains anything already in the in-memory
-        # queue before exiting.
+                    metrics['statistics_failures'] += 1
+                    log.exception('event=coverage_statistics_failure worker=%s', worker_id)
+                last_coverage = now
+            try:
+                snapshot()
+            except Exception:
+                metrics['statistics_failures'] += 1
+                log.exception('event=worker_heartbeat_failure worker=%s', worker_id)
+            finished.wait(1)
         processor.join()
+        if failure:
+            raise RuntimeError('Parser stopped before completing drain') from failure[0]
+    finally:
+        inserter.stop()  # Any unacknowledged batches remain in this worker's spool.
+        try:
+            snapshot('failed' if failure or processor.is_alive() else 'stopped')
+        except Exception:
+            log.exception('event=final_worker_heartbeat_failure worker=%s', worker_id)
+        log.info('event=shutdown worker=%s counters=%s', worker_id, dict(metrics))
 
-        # Parsed batches are persisted before stopping writer.
-        inserter.stop()
 
-        log.info(
-            "event=shutdown worker=%s counters=%s",
-            worker_id,
-            dict(metrics),
-        )
+def write_snapshot(name, data):
+    path = config.DATA_DIR / name
+    temp = path.with_suffix('.tmp')
+    temp.write_text(json.dumps(data), encoding='utf-8')
+    for attempt in range(3):
+        try:
+            temp.replace(path)
+            return
+        except PermissionError:
+            # Windows readers briefly block replacement. This runs only in
+            # health reporting, never the receiver hot path.
+            if attempt == 2:
+                raise
+            time.sleep(.01)
 
 
-# ============================================================
-# PROCESS SUPERVISOR
-# ============================================================
+def queue_depth(packets):
+    try:
+        return packets.qsize()  # Approximate; never used to decide when to stop.
+    except (NotImplementedError, OSError):
+        return None
+
+
+def enqueue_packet(packets, packet, metrics):
+    metrics['received'] += 1
+    try:
+        packets.put_nowait(packet)
+        metrics['queued'] += 1
+    except queue.Full:
+        metrics['dropped_queue'] += 1
+    except Exception:
+        metrics['dropped_transport'] += 1
+        raise  # Fail loudly; do not pretend this packet was delivered.
+
+
+def receive_loop(sock, packets, stop, metrics):
+    while not stop.is_set():
+        try:
+            data, (ip, port) = sock.recvfrom(65535)
+            received_at = datetime.now(timezone.utc)
+            enqueue_packet(packets, (data, ip, port, received_at), metrics)
+        except socket.timeout:
+            continue
+
+
+def run_listener(stop=None, worker_target=worker_main):
+    # spawn prevents consumers from inheriting sockets, DB clients or feeder threads.
+    context = mp.get_context('spawn')
+    stop = stop or context.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    packets = context.Queue(maxsize=config.QUEUE_SIZE)
+    run_id = f'{os.getpid()}-{time.time_ns()}'
+    metrics = Counter(received=0, queued=0, dropped_queue=0, dropped_transport=0,
+                      statistics_failures=0, worker_failures=0)
+    processes = [context.Process(target=worker_target, args=(i, packets, run_id),
+                 name=f'syslog-parser-{i}') for i in range(effective_workers())]
+    monitor_stop = threading.Event()
+    draining = threading.Event()
+    socket_info = {}
+    previous = {}
+    previous_workers = {}
+    from udp_health import read_udp, deltas, warnings
+
+    def feeder_error(exc, packet):
+        metrics['dropped_transport'] += 1
+        log.error('event=queue_feeder_failure packet_lost=1 error=%r', exc)
+        stop.set()
+    packets._on_queue_feeder_error = feeder_error
+
+    def sample(state='running'):
+        nonlocal previous, previous_workers
+        now = time.time()
+        kernel = read_udp()
+        elapsed = now-previous.get('heartbeat', now)
+        delta = deltas(kernel, previous.get('kernel_udp'), elapsed)
+        workers = []
+        for i in range(effective_workers()):
+            try:
+                row = json.loads((config.DATA_DIR/f'listener-{i}.json').read_text())
+                if row.get('run_id') == run_id:
+                    workers.append(row)
+            except (OSError, ValueError):
+                pass
+        row = dict(metrics, role='receiver', run_id=run_id, pid=os.getpid(),
+                   heartbeat=now, state=state, queue_size=queue_depth(packets),
+                   queue_capacity=config.QUEUE_SIZE, num_workers=len(processes),
+                   worker_pids=[p.pid for p in processes], kernel_udp=kernel,
+                   kernel_delta=delta, kernel_rates={k:v/elapsed for k,v in delta.items()} if elapsed>0 else {},
+                   **socket_info)
+        row['warnings'] = warnings(row, workers, previous, previous_workers)
+        write_snapshot('receiver.json', row)
+        previous, previous_workers = row, {str(w['worker_id']):w for w in workers}
+
+    def monitor():
+        while not monitor_stop.is_set():
+            if not draining.is_set() and any(p.exitcode is not None for p in processes):
+                metrics['worker_failures'] += 1
+                log.error('event=consumer_exited receiver_stopping=1')
+                stop.set()
+            try:
+                sample('draining' if draining.is_set() else 'running')
+            except Exception:
+                metrics['statistics_failures'] += 1
+                log.exception('event=receiver_heartbeat_failure')
+            monitor_stop.wait(1)
+
+    sock = None
+    reporter = None
+    failed = False
+    try:
+        # Bind before starting consumers: a second instance must fail before
+        # it can open the same spool files. spawn does not inherit this socket.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, config.SOCKET_RCVBUF)
+        sock.settimeout(.25)
+        sock.bind((config.LISTEN_HOST, config.LISTEN_PORT))
+        socket_info.update(port=sock.getsockname()[1], requested_rcvbuf=config.SOCKET_RCVBUF,
+                           effective_rcvbuf=sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF))
+        for process in processes:
+            process.start()
+        reporter = threading.Thread(target=monitor, name='receiver-health', daemon=True)
+        reporter.start()
+        log.info('event=receiver_start pid=%s udp_port=%s consumers=%s', os.getpid(), socket_info['port'], len(processes))
+        receive_loop(sock, packets, stop, metrics)
+    except BaseException:
+        failed = True
+        log.exception('event=receiver_failed')
+        raise
+    finally:
+        stop.set()
+        draining.set()
+        if sock is not None:
+            sock.close()
+        # Queue feeder preserves this producer's FIFO order. Markers are put only
+        # AFTER reception ends. Consumers never use empty()/qsize() to exit.
+        alive = [p for p in processes if p.pid is not None and p.is_alive()]
+        if any(p.pid is not None and p.exitcode is not None for p in processes):
+            failed = True  # No consumer is allowed to exit before its marker.
+        sent = 0
+        while sent < len(alive):
+            if not any(p.is_alive() for p in alive):
+                break
+            try:
+                packets.put(None, timeout=.2)
+                sent += 1
+            except queue.Full:
+                continue
+        for process in processes:
+            if process.pid is not None:
+                process.join()
+        monitor_stop.set()
+        if reporter:
+            reporter.join()
+        failed = failed or any(p.exitcode not in (None, 0) for p in processes) or bool(metrics['dropped_transport'] or metrics['worker_failures'])
+        try:
+            if socket_info:  # A rejected second bind must not overwrite the active receiver's heartbeat.
+                sample('failed' if failed else 'stopped')
+        except Exception:
+            log.exception('event=final_receiver_heartbeat_failure')
+        # A failed consumer may leave undeliverable pipe contents. Do not hang
+        # interpreter shutdown on that feeder; report it as a failed run.
+        if failed:
+            packets.cancel_join_thread()
+            log.error('event=incomplete_drain remaining_queue=%s', queue_depth(packets))
+        packets.close()
+        if not failed:
+            packets.join_thread()
+        log.info('event=receiver_shutdown counters=%s', dict(metrics))
+    if failed:
+        raise RuntimeError('Receiver/consumer failed; inspect counters and durable spools')
+
 
 def main():
-    stop = mp.Event()
-
-    signal.signal(
-        signal.SIGINT,
-        lambda *_: stop.set(),
-    )
-
-    signal.signal(
-        signal.SIGTERM,
-        lambda *_: stop.set(),
-    )
-
-    workers_count = effective_workers()
-
-    if workers_count == 1:
-        worker_main(
-            0,
-            stop,
-        )
-        return
-
-    workers = [
-        mp.Process(
-            target=worker_main,
-            args=(
-                i,
-                stop,
-            ),
-        )
-        for i in range(
-            workers_count
-        )
-    ]
-
-    for process in workers:
-        process.start()
-
-    while not stop.wait(1):
-        if any(
-            not process.is_alive()
-            for process in workers
-        ):
-            log.error(
-                "event=worker_exited"
-            )
-
-            stop.set()
-
-    for process in workers:
-        process.join()
-
-    if any(
-        process.exitcode
-        for process in workers
-    ):
-        raise RuntimeError(
-            "Listener worker failed"
-        )
+    run_listener()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

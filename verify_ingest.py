@@ -6,21 +6,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 import config
 
-COUNTERS = ('received', 'denied', 'inserted', 'dropped_queue', 'dropped_spool', 'dropped_processing')
+COUNTERS = ('received', 'denied', 'inserted', 'dropped_queue', 'dropped_transport', 'dropped_spool', 'dropped_processing')
 
 
 def workers():
-    result = {}
-    for path in config.DATA_DIR.glob('listener-*.json'):
-        row = json.loads(path.read_text())
-        if time.time()-row['heartbeat'] > 10:
-            raise RuntimeError('Stale listener heartbeat; verify while listener is running')
-        if row.get('queue_size', 0) or row.get('spool_bytes', 0):
-            raise RuntimeError('Queue/spool not drained; pause test sender and wait')
-        result[path.name] = row
-    if not result:
-        raise RuntimeError('No listener heartbeats')
-    return result
+    from monitoring import ingestion_snapshots
+    receiver, consumers = ingestion_snapshots()
+    if not receiver['up'] or len(consumers) != receiver.get('num_workers') or not all(w['up'] for w in consumers):
+        raise RuntimeError('Receiver/worker heartbeat missing or stale')
+    if receiver.get('queue_size') != 0 or any(w.get('spool_bytes', 0) for w in consumers):
+        raise RuntimeError('Queue/spool not drained; pause sender and wait')
+    return dict(receiver=receiver, **{str(w['worker_id']):w for w in consumers})
 
 
 def main():
@@ -36,7 +32,8 @@ def main():
         return
     baseline = json.loads(args.baseline.read_text())
     old = baseline['workers']
-    if set(old) != set(current) or any(old[key]['pid'] != current[key]['pid'] for key in old):
+    if set(old) != set(current) or any(old[key]['pid'] != current[key]['pid'] or
+            old[key].get('run_id') != current[key].get('run_id') for key in old):
         raise RuntimeError('Workers restarted/changed; start a new controlled test')
     delta = {key: sum(current[w].get(key, 0)-old[w].get(key, 0) for w in old) for key in COUNTERS}
     from database import get_client
