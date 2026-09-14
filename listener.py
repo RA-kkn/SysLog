@@ -16,6 +16,9 @@ from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from udp_receive import create_transport, receive_loop
+from shared_packets import SharedPacketRing, received_datetime
+
 import config
 import device_store
 
@@ -464,7 +467,7 @@ def worker_main(worker_id, packets, run_id):
                                 data,
                                 ip,
                                 port,
-                                received_at,
+                                received_datetime(received_at),
                             )
                         )
 
@@ -689,23 +692,13 @@ def enqueue_packet(packets, packet, metrics):
         raise  # Fail loudly; do not pretend this packet was delivered.
 
 
-def receive_loop(sock, packets, stop, metrics):
-    while not stop.is_set():
-        try:
-            data, (ip, port) = sock.recvfrom(65535)
-            received_at = datetime.now(timezone.utc)
-            enqueue_packet(packets, (data, ip, port, received_at), metrics)
-        except socket.timeout:
-            continue
-
-
 def run_listener(stop=None, worker_target=worker_main):
     # spawn prevents consumers from inheriting sockets, DB clients or feeder threads.
     context = mp.get_context('spawn')
     stop = stop or context.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    packets = context.Queue(maxsize=config.QUEUE_SIZE)
+    packets = create_transport(context, config.QUEUE_SIZE)
     run_id = f'{os.getpid()}-{time.time_ns()}'
     metrics = Counter(received=0, queued=0, dropped_queue=0, dropped_transport=0,
                       statistics_failures=0, worker_failures=0)
@@ -722,7 +715,8 @@ def run_listener(stop=None, worker_target=worker_main):
         metrics['dropped_transport'] += 1
         log.error('event=queue_feeder_failure packet_lost=1 error=%r', exc)
         stop.set()
-    packets._on_queue_feeder_error = feeder_error
+    if not isinstance(packets, SharedPacketRing):
+        packets._on_queue_feeder_error = feeder_error
 
     def sample(state='running'):
         nonlocal previous, previous_workers
@@ -744,6 +738,10 @@ def run_listener(stop=None, worker_target=worker_main):
                    worker_pids=[p.pid for p in processes], kernel_udp=kernel,
                    kernel_delta=delta, kernel_rates={k:v/elapsed for k,v in delta.items()} if elapsed>0 else {},
                    **socket_info)
+        if isinstance(packets, SharedPacketRing):
+            row.update(ipc='shared-ring',queue_bytes=packets.used_bytes(),queue_byte_capacity=packets.byte_capacity)
+        else:
+            row['ipc']='multiprocessing-queue'
         row['warnings'] = warnings(row, workers, previous, previous_workers)
         write_snapshot('receiver.json', row)
         previous, previous_workers = row, {str(w['worker_id']):w for w in workers}
@@ -769,7 +767,7 @@ def run_listener(stop=None, worker_target=worker_main):
         # it can open the same spool files. spawn does not inherit this socket.
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, config.SOCKET_RCVBUF)
-        sock.settimeout(.25)
+        sock.settimeout(.01 if isinstance(packets,SharedPacketRing) else .25)
         sock.bind((config.LISTEN_HOST, config.LISTEN_PORT))
         socket_info.update(port=sock.getsockname()[1], requested_rcvbuf=config.SOCKET_RCVBUF,
                            effective_rcvbuf=sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF))
@@ -788,7 +786,7 @@ def run_listener(stop=None, worker_target=worker_main):
         draining.set()
         if sock is not None:
             sock.close()
-        # Queue feeder preserves this producer's FIFO order. Markers are put only
+        # Both transports preserve this producer's FIFO order. Markers are put only
         # AFTER reception ends. Consumers never use empty()/qsize() to exit.
         alive = [p for p in processes if p.pid is not None and p.is_alive()]
         if any(p.pid is not None and p.exitcode is not None for p in processes):

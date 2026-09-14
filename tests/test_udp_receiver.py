@@ -53,14 +53,24 @@ class UDPTests(unittest.TestCase):
         from listener import receive_loop
         from unittest.mock import Mock
         stop=Mock();stop.is_set.side_effect=[False,True]
-        sock=Mock();sock.recvfrom.return_value=(b'raw',('192.0.2.1',20))
+        sock=Mock()
+        def receive(buffer):
+            buffer[:3]=b'raw'
+            return 3,('192.0.2.1',20)
+        sock.recvfrom_into.side_effect=[None,socket.timeout()]
+        # First call fills the reusable buffer; second wakes the stop check.
+        calls=iter((False,True))
+        def read(buffer):
+            if next(calls):raise socket.timeout()
+            return receive(buffer)
+        sock.recvfrom_into.side_effect=read
         packets=Mock();metrics=Counter()
         with patch('listener.write_snapshot',side_effect=AssertionError('I/O in hot path')), \
              patch('listener.device_store.get_approved_ips',side_effect=AssertionError('ACL in hot path')):
             receive_loop(sock,packets,stop,metrics)
         value=packets.put_nowait.call_args.args[0]
         self.assertEqual(value[:3],(b'raw','192.0.2.1',20))
-        self.assertIsNotNone(value[3].tzinfo)
+        self.assertIsInstance(value[3],int)
 
     def test_new_receiver_and_workers_reconcile(self):
         import config

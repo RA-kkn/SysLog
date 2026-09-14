@@ -35,6 +35,8 @@ def warnings(receiver, workers, previous_receiver=None, previous_workers=None):
     depth = receiver.get('queue_size')
     if depth is not None and depth >= receiver.get('queue_capacity', 1)*.7:
         alerts.append('Shared packet queue is at least 70% full')
+    if receiver.get('queue_byte_capacity') and receiver.get('queue_bytes',0) >= receiver['queue_byte_capacity']*.7:
+        alerts.append('Shared IPC block/byte capacity is at least 70% full')
     if receiver.get('dropped_queue', 0) > previous_receiver.get('dropped_queue', 0):
         alerts.append('New application queue drops')
     if receiver.get('dropped_transport', 0):
