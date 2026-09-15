@@ -21,8 +21,9 @@ def main():
         auth.save_user('udp-admin','Test',password,'ADMIN',True,True)
         search_api.query_logs=lambda **kw:dict(results=[],count=0,total_count=0,next_cursor=None)
         search_api.report=lambda:dict(listener='UP',clickhouse='DOWN',api='UP',sqlite='UP',cpu_percent=1,
-            ram={'used':1000},storage=None,workers=[dict(pid=12,up=True,consumed=100)],
-            receiver=dict(received=101,queued=100,dropped_queue=1,queue_size=70,queue_capacity=100,effective_rcvbuf=67108864,dropped_transport=0),
+            ram={'used':1000},storage=None,workers=[dict(worker_id=0,pid=12,up=True,consumed=100)],
+            ingestion_health=dict(status='LOSS DETECTED',incoming_packets=101,stored_records=90,packet_loss=1,loss_percent=1/101*100,queue_percent=70,queue_size=70,spool_pending_batches=1,spool_pending_bytes=100,uptime_seconds=60,current_eps=25),
+            receiver=dict(num_workers=16,received=101,queued=100,dropped_queue=1,queue_size=70,queue_capacity=100,effective_rcvbuf=67108864,dropped_transport=0),
             kernel_udp=dict(InDatagrams=100,InErrors=73,RcvbufErrors=73,IgnoredMulti=0,MemErrors=0),
             warnings=['Kernel UDP RcvbufErrors increased: packets lost before the listener','Shared packet queue is at least 70% full'])
         with socket.socket() as sock:
@@ -41,11 +42,17 @@ def main():
                 page.fill('#username','udp-admin');page.fill('#password',password)
                 page.locator('#loginForm button').click()
                 page.locator('[data-page=system]').click()
+                expect(page.locator('#ingestionStatus')).to_have_text('LOSS DETECTED')
+                expect(page.locator('#ingestionDetails')).to_be_hidden()
+                expect(page.locator('.worker-card')).to_have_count(0)
+                page.locator('#viewIngestionDetails').click()
+                expect(page.locator('#ingestionDetails')).to_be_visible()
+                expect(page.locator('#workers tbody tr')).to_have_count(16)
                 expect(page.locator('#kernelStats')).to_contain_text('RcvbufErrors')
                 expect(page.locator('#kernelStats')).to_contain_text('73')
                 expect(page.locator('#receiverStats')).to_contain_text('70 / 100')
                 expect(page.locator('#ingestWarnings')).to_contain_text('70%')
-                expect(page.locator('#workers')).to_contain_text('Consumed from shared queue')
+                expect(page.locator('#workers')).to_contain_text('Consumed')
                 assert not errors,errors
                 browser.close()
             print('PASS: Edge receiver counters, kernel RcvbufErrors, congestion warnings, consumer stats; mocked health data')

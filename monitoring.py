@@ -16,7 +16,7 @@ def ingestion_snapshots():
     for i in range(receiver.get('num_workers', config.NUM_WORKERS)):
         try:
             row = json.loads((config.DATA_DIR/f'listener-{i}.json').read_text())
-            if row.get('run_id') != receiver.get('run_id'):
+            if not receiver.get('run_id') or row.get('run_id') != receiver['run_id']:
                 continue
             row['up'] = now-row['heartbeat'] < 10 and row.get('state') == 'running'
             workers.append(row)
@@ -55,6 +55,38 @@ def ingestion_history(now):
     for label,length in [('1h',60),('24h',1440),('7d',10080)]:
         result['eps_'+label] = sum(inserts.get(m,0) for m in minutes[:length])/(length*60) if len(minutes)>=length else None
     return result
+
+def ingestion_health(receiver, workers, clickhouse='UP', now=None):
+    """Snapshot-only accounting. A backlog is never inferred to be lost."""
+    now = time.time() if now is None else now
+    run_id = receiver.get('run_id')
+    workers = [w for w in workers if run_id and w.get('run_id') == run_id]
+    total = lambda key: sum(max(0, w.get(key, 0)) for w in workers)
+    kernel = receiver.get('kernel_run_delta', {}).get('RcvbufErrors')
+    application = sum(max(0, receiver.get(k, 0)) for k in ('dropped_queue', 'dropped_transport'))
+    application += total('dropped_processing') + total('dropped_spool')
+    loss = application + max(0, kernel or 0)
+    incoming = max(0, receiver.get('received', 0))
+    denominator = incoming + max(0, kernel or 0)
+    depth = receiver.get('queue_size', 0) or 0
+    capacity = receiver.get('queue_capacity', 0)
+    byte_capacity = receiver.get('queue_byte_capacity', 0)
+    byte_usage = receiver.get('queue_bytes', 0)
+    usage = max(depth/capacity if capacity else 0, byte_usage/byte_capacity if byte_capacity else 0)*100
+    pending = total('spool_batches')
+    problems = (len(workers) != receiver.get('num_workers') or not all(w.get('up') for w in workers)
+                or usage >= 70 or pending > 0 or total('write_failures') > 0
+                or receiver.get('worker_failures', 0) or clickhouse != 'UP')
+    status = 'DOWN' if not receiver.get('up') else 'LOSS DETECTED' if loss else 'DEGRADED' if problems else 'HEALTHY'
+    return dict(status=status, incoming_packets=incoming, stored_records=total('inserted'),
+                current_eps=receiver.get('current_eps') if receiver.get('up') else 0,
+                packet_loss=loss, loss_percent=loss/denominator*100 if denominator else 0,
+                kernel_loss=kernel, application_loss=application, queue_percent=usage,
+                queue_size=depth, queue_capacity=capacity, spool_pending_batches=pending,
+                spool_pending_bytes=total('spool_bytes'),
+                uptime_seconds=max(0, min(now, receiver.get('heartbeat', now))-receiver['started']) if receiver.get('started') else None,
+                run_id=run_id)
+
 
 def report():
     now = time.time()
@@ -111,6 +143,7 @@ def report():
             method='Acknowledged inserts during contiguous covered complete minutes (up to 7 days, 1-2 minute delay), multiplied by active structured-table bytes per row. Projection, not measured physical disk growth. History starts with this version; gaps reset confidence. NAT-only bytes/row include preserved raw payloads. Legacy tables are included in disk usage, not new-ingest forecasts. Excludes legacy ingest, backups, replicas and merge headroom.'))
     except Exception:
         result['clickhouse_error'] = 'Storage query unavailable; inspect API logs and database permissions.'
+    result['ingestion_health'] = ingestion_health(receiver, workers, result['clickhouse'], now)
     return result
 
 if __name__ == '__main__':

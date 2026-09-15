@@ -974,11 +974,27 @@ async function system() {
     const d =
         await api('/api/system');
     const receiver = d.receiver || {};
+    const h = d.ingestion_health || {};
+    $('ingestionStatus').textContent = h.status || 'DOWN';
+    $('ingestionStatus').dataset.status = h.status || 'DOWN';
+    stats('ingestionSummary', [
+        ['Incoming Packets', num(h.incoming_packets)], ['Stored Records', num(h.stored_records)],
+        ['Current EPS', num(h.current_eps)], ['Packet Loss', num(h.packet_loss)],
+        ['Loss %', h.loss_percent == null ? 'Unavailable' : h.loss_percent.toFixed(4) + '%'],
+        ['Queue usage', `${num(h.queue_percent)}% (${num(h.queue_size)} packets)`],
+        ['Spool Pending', `${num(h.spool_pending_batches)} batches / ${bytes(h.spool_pending_bytes)}`],
+        ['Uptime', h.uptime_seconds == null ? 'Unavailable' : `${num(Math.floor(h.uptime_seconds / 3600))}h ${Math.floor(h.uptime_seconds / 60) % 60}m`]
+    ]);
+
     stats('receiverStats', [
         ['Received', num(receiver.received)], ['Queued', num(receiver.queued)],
         ['Queue drops', num(receiver.dropped_queue)],
         ['Queue depth / capacity', `${num(receiver.queue_size)} / ${num(receiver.queue_capacity)}`],
         ['Socket receive buffer', bytes(receiver.effective_rcvbuf)],
+        ['Shared memory used / capacity', `${bytes(receiver.queue_bytes)} / ${bytes(receiver.queue_byte_capacity)}`],
+        ['IPC transport', receiver.ipc || 'Unavailable'],
+        ['Current-run kernel RcvbufErrors', num(receiver.kernel_run_delta?.RcvbufErrors)],
+        ['Run ID', receiver.run_id || 'Unavailable'],
         ['Queue transport failures', num(receiver.dropped_transport)]
     ]);
     const kernel = d.kernel_udp || {};
@@ -1187,105 +1203,27 @@ async function system() {
         );
     }
 
-    for (const w of d.workers) {
+    const workerRows = Array.from({length: receiver.num_workers || d.workers.length}, (_, i) => {
+        const w = d.workers.find(w => w.worker_id === i) || {};
+        return {Worker: i + 1, Status: w.up ? 'Running' : 'Unavailable', PID: w.pid || '?',
+            Consumed: num(w.consumed), Parsed: num(w.nat_parsed), Fallback: num(w.normalized_fallback),
+            Acknowledged: num(w.inserted), Unauthorized: num(w.denied),
+            'Spool batches': num(w.spool_batches), 'Spool bytes': bytes(w.spool_bytes),
+            'Write failures': num(w.write_failures), 'Processing drops': num(w.dropped_processing),
+            'Spool drops': num(w.dropped_spool)};
+    });
+    table('workers', workerRows, ['Worker','Status','PID','Consumed','Parsed','Fallback','Acknowledged',
+        'Unauthorized','Spool batches','Spool bytes','Write failures','Processing drops','Spool drops']);
 
-        const card =
-            document.createElement(
-                'section'
-            );
-
-        card.className =
-            'worker-card';
-
-        const title =
-            document.createElement(
-                'h3'
-            );
-
-        title.textContent =
-            `Worker ${w.pid} - ` +
-            `${w.up ? 'Running' : 'Offline'}`;
-
-        card.append(title);
-
-        const grid =
-            document.createElement(
-                'div'
-            );
-
-        grid.className =
-            'worker-grid';
-
-        const entries = [
-            ['Consumed from shared queue', num(w.consumed)],
-            ['NAT parsed', num(w.nat_parsed)],
-            ['Fallback records', num(w.normalized_fallback)],
-            ['Stored / acknowledged', num(w.inserted)],
-            ['Unauthorized', num(w.denied)],
-            ['Spool', bytes(w.spool_bytes)],
-            ['Parse failures', num(w.parse_failures)],
-            ['Write failures', num(w.write_failures)],
-            ['Spool drops', num(w.dropped_spool)],
-            [
-                'Processing drops',
-                num(
-                    w.dropped_processing ??
-                    0
-                )
-            ],
-            [
-                'Statistics failures',
-                num(
-                    w.statistics_failures ??
-                    0
-                )
-            ]
-        ];
-
-        for (
-            const [name, value]
-            of entries
-        ) {
-
-            const item =
-                document.createElement(
-                    'div'
-                );
-
-            const label =
-                document.createElement(
-                    'span'
-                );
-
-            const val =
-                document.createElement(
-                    'strong'
-                );
-
-            label.textContent =
-                name;
-
-            val.textContent =
-                value;
-
-            item.append(
-                label,
-                val
-            );
-
-            grid.append(item);
-        }
-
-        card.append(grid);
-        $('workers').append(card);
-    }
-
-    if (!d.workers.length) {
-        $('workers').textContent =
-            'No listener heartbeat available.';
-    }
 }
 
+
+$('viewIngestionDetails').onclick = () => {
+    const details = $('ingestionDetails');
+    details.hidden = !details.hidden;
+    $('viewIngestionDetails').setAttribute('aria-expanded', String(!details.hidden));
+    $('viewIngestionDetails').textContent = details.hidden ? 'View Details' : 'Hide Details';
+};
 
 $('refreshSystem').onclick =
     safe(system);

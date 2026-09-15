@@ -14,3 +14,12 @@
 
 /* NAT-only main table: exactly nine fields, no raw/detail expansion. */
 #logs td{white-space:nowrap;max-width:none}#logHeader th{white-space:nowrap}
+
+.ingestion-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:16px; margin:20px 0; }
+#ingestionStatus { font-weight:700; font-size:1.2rem; }
+
+.ingestion-summary .stat { border:0; padding:8px 0; border-radius:0; background:transparent; }
+
+#ingestionStatus[data-status="HEALTHY"] { color:#16844c; }
+#ingestionStatus[data-status="DEGRADED"] { color:#b37b08; }
+#ingestionStatus[data-status="LOSS DETECTED"], #ingestionStatus[data-status="DOWN"] { color:#d85461; }

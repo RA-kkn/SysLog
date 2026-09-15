@@ -66,8 +66,8 @@ def main():
                 assert page.locator('#logHeader th').all_text_contents()==[label for _,label in DISPLAY_COLUMNS]
                 assert page.locator('#kind option').all_text_contents()==['NAT']
                 assert page.locator('#logs button').count()==0
-                assert page.locator('#logs tr').last.locator('td').count()==9
-                assert page.locator('#logs tr').last.locator('td').first.inner_text()==''
+                assert page.locator('#logs tr').last.locator('td').count()==10
+                assert page.locator('#logs tr').last.locator('td').nth(3).inner_text()==''
                 page.screenshot(path=str(artifacts/'nat-search.png'))
                 page.locator('[data-page=devices]').click()
                 page.fill('#manualIP','192.0.2.1');page.locator('#approveForm button').click()
@@ -89,15 +89,17 @@ def main():
                 import csv
                 exported=list(csv.reader(Path(download.value.path()).read_text(encoding='utf-8').splitlines()))
                 assert exported[0]==[label for _,label in DISPLAY_COLUMNS]
-                assert exported[1][7]=='2026-09-11 06:00:00'
-                assert len(exported[1])==9
+                assert exported[1][0]=='2026-09-11 06:00:00'
+                assert len(exported[1])==10
                 page.select_option('#kind','nat_sessions_v2');page.locator('#searchForm button').click()
                 expect(page.locator('#logHeader')).to_contain_text('Private Port')
                 expect(page.locator('#logs > tr:not(.detail-row)')).to_have_count(2)
                 page.locator('[data-page=system]').click()
+                expect(page.locator('#ingestionDetails')).to_be_hidden()
+                page.locator('#viewIngestionDetails').click()
                 expect(page.locator('#compressionStats')).to_contain_text('11.44x')
-                expect(page.locator('.worker-card')).to_have_count(1)
-                assert page.locator('#workers table').count()==0
+                expect(page.locator('.worker-card')).to_have_count(0)
+                assert page.locator('#workers table').count()==1
                 page.screenshot(path=str(artifacts/'system-health.png'))
                 page.locator('[data-page=settings]').click()
                 expect(page.locator('#users tbody tr')).to_have_count(2)
@@ -114,7 +116,7 @@ def main():
                 assert not page.locator('#export').is_visible()
                 assert not errors,errors
                 browser.close()
-            print('PASS: Edge auto-load/reload/navigation, totals, next/previous, exact nine NAT columns, no details/raw exposure, Karachi time, health cards, login/RBAC/devices/CSV/branding/theme layout. Search/health responses stubbed.')
+            print('PASS: Edge auto-load/reload/navigation, totals, next/previous, exact ten NAT columns, no details/raw exposure, Karachi time, health cards, login/RBAC/devices/CSV/branding/theme layout. Search/health responses stubbed.')
         finally:
             server.should_exit=True;thread.join(timeout=10)
 

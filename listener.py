@@ -711,6 +711,9 @@ def run_listener(stop=None, worker_target=worker_main):
     previous_workers = {}
     from udp_health import read_udp, deltas, warnings
 
+    started = time.time()
+    kernel_baseline = read_udp()
+
     def feeder_error(exc, packet):
         metrics['dropped_transport'] += 1
         log.error('event=queue_feeder_failure packet_lost=1 error=%r', exc)
@@ -733,7 +736,9 @@ def run_listener(stop=None, worker_target=worker_main):
             except (OSError, ValueError):
                 pass
         row = dict(metrics, role='receiver', run_id=run_id, pid=os.getpid(),
-                   heartbeat=now, state=state, queue_size=queue_depth(packets),
+                   heartbeat=now, started=started, state=state, queue_size=queue_depth(packets),
+                   current_eps=max(0, metrics['received']-previous.get('received', metrics['received']))/elapsed if elapsed>0 else 0,
+                   kernel_baseline=kernel_baseline, kernel_run_delta=deltas(kernel, kernel_baseline, now-started),
                    queue_capacity=config.QUEUE_SIZE, num_workers=len(processes),
                    worker_pids=[p.pid for p in processes], kernel_udp=kernel,
                    kernel_delta=delta, kernel_rates={k:v/elapsed for k,v in delta.items()} if elapsed>0 else {},

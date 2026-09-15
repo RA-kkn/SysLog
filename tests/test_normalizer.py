@@ -65,7 +65,7 @@ class NormalizationTests(unittest.TestCase):
         self.assertNotEqual(tokens[1], tokens[2])
 
     def test_csv_timezone_and_contract(self):
-        self.assertEqual(len(DISPLAY_COLUMNS), 9)
+        self.assertEqual([label for _,label in DISPLAY_COLUMNS], ['Session Start Time', 'Subscriber/User ID', 'Router IP', 'Private IP', 'Private Port', 'Public IP', 'Public Port', 'Dest IP', 'Dest Port', 'Protocol/App'])
         self.assertEqual(export_value('timestamp', '2026-09-12T00:00:00Z'), '2026-09-12 05:00:00')
         self.assertEqual(export_value('private_port', None), '')
         self.assertEqual(export_value('private_port', 0), 0)
