@@ -979,7 +979,7 @@ async function system() {
     $('ingestionStatus').dataset.status = h.status || 'DOWN';
     stats('ingestionSummary', [
         ['Incoming Packets', num(h.incoming_packets)], ['Stored Records', num(h.stored_records)],
-        ['Current EPS', num(h.current_eps)], ['Packet Loss', num(h.packet_loss)],
+        ['Current EPS', num(h.current_eps)], ['Packet Loss (current run)', num(h.packet_loss)],
         ['Loss %', h.loss_percent == null ? 'Unavailable' : h.loss_percent.toFixed(4) + '%'],
         ['Queue usage', `${num(h.queue_percent)}% (${num(h.queue_size)} packets)`],
         ['Spool Pending', `${num(h.spool_pending_batches)} batches / ${bytes(h.spool_pending_bytes)}`],
@@ -993,12 +993,15 @@ async function system() {
         ['Socket receive buffer', bytes(receiver.effective_rcvbuf)],
         ['Shared memory used / capacity', `${bytes(receiver.queue_bytes)} / ${bytes(receiver.queue_byte_capacity)}`],
         ['IPC transport', receiver.ipc || 'Unavailable'],
+        ['Receive mode', receiver.receive_mode || 'recvfrom_into'],
+        ['Receive batch limit', num(receiver.receive_batch_size)],
+        ['Largest received batch', num(receiver.receive_max_batch)],
         ['Current-run kernel RcvbufErrors', num(receiver.kernel_run_delta?.RcvbufErrors)],
         ['Run ID', receiver.run_id || 'Unavailable'],
         ['Queue transport failures', num(receiver.dropped_transport)]
     ]);
     const kernel = d.kernel_udp || {};
-    stats('kernelStats', ['InDatagrams','InErrors','RcvbufErrors','IgnoredMulti','MemErrors'].map(key => [key, num(kernel[key])]));
+    stats('kernelStats', ['InDatagrams','InErrors','RcvbufErrors','IgnoredMulti','MemErrors'].map(key => [`${key} (host cumulative)`, num(kernel[key])]));
     const alerts = d.warnings || [];
     $('ingestWarnings').textContent = alerts.length ? alerts.join(' | ') : 'No new ingestion warnings in the latest sample.';
 
@@ -1095,7 +1098,7 @@ async function system() {
                 [
                     'Daily net growth',
                     s.measured_net_disk_growth_per_day == null
-                        ? 'Unavailable'
+                        ? 'Collecting'
                         : (
                             s.measured_net_disk_growth_per_day < 0
                                 ? '-'

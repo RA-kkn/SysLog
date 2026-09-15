@@ -22,7 +22,7 @@ class UDPTests(unittest.TestCase):
     def test_deltas_handle_reset_and_warnings(self):
         self.assertEqual(deltas({'RcvbufErrors':5}, {'RcvbufErrors':3}, 1), {'RcvbufErrors':2})
         self.assertEqual(deltas({'RcvbufErrors':1}, {'RcvbufErrors':3}, 1), {})
-        receiver = dict(queue_size=70,queue_capacity=100,dropped_queue=1,kernel_delta={'RcvbufErrors':2})
+        receiver = dict(spool_backlog_seconds=30,queue_size=70,queue_capacity=100,dropped_queue=1,kernel_delta={'RcvbufErrors':2})
         worker = dict(worker_id=0,spool_bytes=100,write_failures=1)
         alerts = warnings(receiver,[worker])
         self.assertEqual(len(alerts),5)

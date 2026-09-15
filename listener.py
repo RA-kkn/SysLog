@@ -709,6 +709,7 @@ def run_listener(stop=None, worker_target=worker_main):
     socket_info = {}
     previous = {}
     previous_workers = {}
+    spool_pending_since = None
     from udp_health import read_udp, deltas, warnings
 
     started = time.time()
@@ -722,7 +723,7 @@ def run_listener(stop=None, worker_target=worker_main):
         packets._on_queue_feeder_error = feeder_error
 
     def sample(state='running'):
-        nonlocal previous, previous_workers
+        nonlocal previous, previous_workers, spool_pending_since
         now = time.time()
         kernel = read_udp()
         elapsed = now-previous.get('heartbeat', now)
@@ -735,7 +736,9 @@ def run_listener(stop=None, worker_target=worker_main):
                     workers.append(row)
             except (OSError, ValueError):
                 pass
-        row = dict(metrics, role='receiver', run_id=run_id, pid=os.getpid(),
+        pending = sum(w.get('spool_batches', 0) for w in workers)
+        spool_pending_since = (spool_pending_since or now) if pending else None
+        row = dict(metrics, spool_backlog_seconds=now-spool_pending_since if spool_pending_since else 0, role='receiver', run_id=run_id, pid=os.getpid(),
                    heartbeat=now, started=started, state=state, queue_size=queue_depth(packets),
                    current_eps=max(0, metrics['received']-previous.get('received', metrics['received']))/elapsed if elapsed>0 else 0,
                    kernel_baseline=kernel_baseline, kernel_run_delta=deltas(kernel, kernel_baseline, now-started),

@@ -3,6 +3,7 @@ import argparse
 from collections import Counter
 from datetime import datetime, timezone
 import json
+import os
 import multiprocessing as mp
 from pathlib import Path
 import queue
@@ -68,8 +69,12 @@ def main():
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--capacity',type=int,default=8192)
     p.add_argument('--rate',type=int,default=25000,help='UDP offered rate; 0 means unpaced')
+    p.add_argument('--receiver',choices=('auto','recvfrom','recvmmsg'),default='auto')
+    p.add_argument('--burst',type=int,default=32,help='Packets per paced burst')
     p.add_argument('--output',type=Path,help='New JSON result file (never overwrites)')
     args=p.parse_args()
+    os.environ['UDP_RECEIVE_MODE']=args.receiver
+    if not 1 <= args.burst <= 100000:p.error('burst must be 1..100000')
     if not (1<=args.bytes<=65507 and 1<=args.packets<=10000000 and 1<=args.workers<=32 and 1<=args.capacity<=2000000 and args.rate>=0):
         p.error('Invalid benchmark bounds')
     ctx=mp.get_context('spawn');workers=[];readers=[];rx=None
@@ -98,7 +103,7 @@ def main():
             with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sender:
                 for n in range(args.packets):
                     sender.sendto(payload,('127.0.0.1',info['port']))
-                    if args.rate and (n+1)%32==0:
+                    if args.rate and (n+1)%args.burst==0:
                         delay=started+(n+1)/args.rate-time.perf_counter()
                         if delay>0:time.sleep(delay)
             offered_seconds=time.perf_counter()-started
@@ -122,14 +127,14 @@ def main():
             packets.close();packets.join_thread()
             receiver_cpu=time.process_time()-cpu_start
         consumed=sum(row['count'] for row in results)
-        result=dict(mode=args.mode,transport=args.transport,offered=args.packets,bytes=args.bytes,workers=args.workers,
+        result=dict(mode=args.mode,transport=args.transport,receiver=args.receiver,burst=args.burst,offered=args.packets,bytes=args.bytes,workers=args.workers,
             capacity=args.capacity,received=receiver_result['received'],consumed=consumed if packets else None,
             dropped_queue=receiver_result.get('dropped_queue',0),elapsed_seconds=round(elapsed,3),
             drained_eps=round((consumed if packets else receiver_result['received'])/elapsed),
             receiver_cpu_seconds=round(receiver_cpu,3),receiver_cpu_percent=round(receiver_cpu/elapsed*100,1),
             consumer_cpu_seconds=round(sum(row['cpu_seconds'] for row in results),3),
             per_consumer=[row['count'] for row in results],kernel_delta=deltas(read_udp(),kernel_before,elapsed),
-            effective_rcvbuf=receiver_result.get('rcvbuf'))
+            effective_rcvbuf=receiver_result.get('rcvbuf'),receive_calls=receiver_result.get('receive_calls'),receive_max_batch=receiver_result.get('receive_max_batch'))
         if args.mode!='ipc':result.update(offered_eps=round(args.packets/offered_seconds),offered_seconds=round(offered_seconds,3))
         print(json.dumps(result,indent=2))
         if args.output:

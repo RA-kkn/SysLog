@@ -12,3 +12,6 @@ requirements.lock.txt
 test-artifacts/
 *.log
 *.pid
+
+_udp_batch.so
+_udp_batch.so.tmp

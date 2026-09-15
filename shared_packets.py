@@ -102,6 +102,22 @@ class SharedPacketRing:
         if self._write_count==self.batch_limit or size==END:
             self.flush()
 
+    def put_encoded(self, source, length):
+        """Trusted native receiver header + payload; same bounded block format."""
+        if not HEADER.size <= length <= HEADER.size+65535 or len(source)<length:
+            raise ValueError('Invalid encoded datagram length')
+        if self._write_block is not None and self._write_pos+length>BLOCK_BYTES:
+            self.flush()
+        if self._write_block is None:
+            self._start_block(False,None)
+        position=self._write_block*BLOCK_BYTES+self._write_pos
+        self._buffer()[position:position+length]=source[:length]
+        self._write_pos+=length
+        self._write_count+=1
+        self._remaining[self._write_block]=self._write_count
+        if self._write_count==self.batch_limit:
+            self.flush()
+
     def put(self,packet,block=True,timeout=None):
         if packet is None:
             return self.put_buffer(b'',END,('0.0.0.0',0),0,block,timeout)

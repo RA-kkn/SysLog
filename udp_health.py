@@ -45,7 +45,8 @@ def warnings(receiver, workers, previous_receiver=None, previous_workers=None):
         alerts.append('Kernel UDP RcvbufErrors increased (host-wide UDP receive loss)')
     for worker in workers:
         old = previous_workers.get(str(worker.get('worker_id')), {})
-        if worker.get('spool_bytes', 0) > old.get('spool_bytes', 0):
+        if worker.get('spool_bytes', 0) > old.get('spool_bytes', 0) and (
+                receiver.get('spool_backlog_seconds', 0) >= 30 or worker.get('spool_bytes', 0) >= 64*1024*1024):
             alerts.append(f"Worker {worker.get('worker_id')}: spool backlog is growing")
         if worker.get('write_failures', 0):
             alerts.append(f"Worker {worker.get('worker_id')}: ClickHouse write failures recorded")

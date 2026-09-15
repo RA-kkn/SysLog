@@ -16,7 +16,9 @@ class IngestionHealthTests(unittest.TestCase):
         self.assertEqual(h['packet_loss'],0)
         self.assertEqual(h['status'],'HEALTHY')
         self.assertEqual(h['uptime_seconds'],100)
-        w['spool_batches']=4
+        w['spool_batches']=1
+        self.assertEqual(ingestion_health(r,[w])['status'],'HEALTHY')
+        r['spool_backlog_seconds']=30
         self.assertEqual(ingestion_health(r,[w])['status'],'DEGRADED')
 
     def test_confirmed_loss_and_denominator(self):
@@ -46,6 +48,12 @@ class IngestionHealthTests(unittest.TestCase):
         r.update(queue_bytes=70,queue_byte_capacity=100)
         self.assertEqual(ingestion_health(r,[w])['status'],'DEGRADED')
         self.assertEqual(ingestion_health(r,[w],clickhouse='DOWN')['packet_loss'],0)
+
+    def test_growth_resets_after_decrease(self):
+        from monitoring import growth_baseline
+        self.assertEqual(growth_baseline([(1,100),(2,120),(3,0),(4,5)]),(3,0))
+        self.assertEqual(growth_baseline([(1,100),(2,120)]),(1,100))
+        self.assertIsNone(growth_baseline([]))
 
     def test_unavailable_kernel_not_invented(self):
         r,w=self.sample(kernel_run_delta={})

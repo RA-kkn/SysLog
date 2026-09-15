@@ -75,7 +75,9 @@ def ingestion_health(receiver, workers, clickhouse='UP', now=None):
     usage = max(depth/capacity if capacity else 0, byte_usage/byte_capacity if byte_capacity else 0)*100
     pending = total('spool_batches')
     problems = (len(workers) != receiver.get('num_workers') or not all(w.get('up') for w in workers)
-                or usage >= 70 or pending > 0 or total('write_failures') > 0
+                or usage >= 70 or (pending > 0 and (receiver.get('spool_backlog_seconds', 0) >= 30
+                    or pending >= max(1, receiver.get('num_workers', 1))*4
+                    or total('spool_bytes') >= 64*1024*1024)) or total('write_failures') > 0
                 or receiver.get('worker_failures', 0) or clickhouse != 'UP')
     status = 'DOWN' if not receiver.get('up') else 'LOSS DETECTED' if loss else 'DEGRADED' if problems else 'HEALTHY'
     return dict(status=status, incoming_packets=incoming, stored_records=total('inserted'),
@@ -86,6 +88,19 @@ def ingestion_health(receiver, workers, clickhouse='UP', now=None):
                 spool_pending_bytes=total('spool_bytes'),
                 uptime_seconds=max(0, min(now, receiver.get('heartbeat', now))-receiver['started']) if receiver.get('started') else None,
                 run_id=run_id)
+
+
+def growth_baseline(samples):
+    """Restart the observation window at the last decrease (wipe/TTL/merge).
+
+    Historical samples are retained; only the selected baseline changes.
+    """
+    baseline = previous = None
+    for sample in samples:
+        if previous is None or sample[1] < previous[1]:
+            baseline = sample
+        previous = sample
+    return baseline
 
 
 def report():
@@ -108,9 +123,10 @@ def report():
         disk_bytes = sum(t['disk_bytes'] for t in tables)
         with device_store._conn() as c:
             pass  # Ingest history is evaluated independently of storage sampling.
-            c.execute('INSERT OR IGNORE INTO storage_samples VALUES (?,?)',(int(now//60)*60,disk_bytes))
+            c.execute('INSERT OR REPLACE INTO storage_samples VALUES (?,?)',(int(now//60)*60,disk_bytes))
             c.execute('DELETE FROM storage_samples WHERE sample_time<?',(int(now)-32*86400,))
-            baseline = c.execute('SELECT sample_time,disk_bytes FROM storage_samples WHERE sample_time>=? ORDER BY sample_time LIMIT 1',(int(now)-86400,)).fetchone()
+            samples = c.execute('SELECT sample_time,disk_bytes FROM storage_samples WHERE sample_time>=? ORDER BY sample_time',(int(now)-86400,)).fetchall()
+            baseline = growth_baseline(samples)
         growth_seconds = now-baseline[0] if baseline else 0
         growth = disk_bytes-baseline[1] if baseline and growth_seconds>=60 else None
         history = ingestion_history(now)
@@ -125,6 +141,7 @@ def report():
         free = sum(d[1] for d in disks)
         result.update(clickhouse='UP', storage=dict(tables=tables,
             database_disk_bytes=sum(t['disk_bytes'] for t in tables),
+            growth_status='collecting' if growth is None else 'measured',
             measured_net_disk_growth_bytes=growth, disk_growth_observation_seconds=growth_seconds,
             measured_net_disk_growth_per_day=growth*86400/growth_seconds if growth is not None else None,
             compression_ratio=raw/compressed if compressed else None,

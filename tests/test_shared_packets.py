@@ -33,6 +33,15 @@ class SharedTests(unittest.TestCase):
         buffer[:]=b'other'
         self.assertEqual(ring.get(timeout=1),(b'first','192.0.2.1',514,1234))
 
+    def test_native_encoded_record_matches_existing_wire_format(self):
+        from shared_packets import HEADER
+        ring=self.ring()
+        for raw in (b'', b'hello', b'\xff'*65535):
+            encoded=HEADER.pack(socket.inet_aton('192.0.2.5'),65535,len(raw),1700000000123456789)+raw
+            ring.put_encoded(memoryview(encoded),len(encoded))
+            self.assertEqual(ring.get(),(raw,'192.0.2.5',65535,1700000000123456789))
+        with self.assertRaises(ValueError):ring.put_encoded(b'x',1)
+
     def test_packet_and_byte_limits(self):
         ring=self.ring(2,1)
         for _ in range(2):ring.put_buffer(b'x',1,('127.0.0.1',1),1)
